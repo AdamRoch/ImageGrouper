@@ -16,7 +16,7 @@ You receive a folder of real estate photos from photoshoots. Each photo was take
 Sign up at **[bounty.autohdr.com](https://bounty.autohdr.com)** and verify your phone number.
 
 ### 2. Join the Competition
-[Join on Codabench](https://www.codabench.org/competitions/15267/?secret_key=f8f2b5ab-b63e-4e5a-aec6-8575936dbb56)
+[Join on Codabench](https://www.codabench.org/competitions/15365/)
 
 ### 3. Build Your Solution
 
@@ -118,5 +118,5 @@ aws s3 sync s3://grouping-dataset-solution/images/ ./images/ --no-sign-request
 ## Links
 
 - [Register](https://bounty.autohdr.com)
-- [Competition Page](https://www.codabench.org/competitions/15267/?secret_key=f8f2b5ab-b63e-4e5a-aec6-8575936dbb56)
+- [Competition Page](https://www.codabench.org/competitions/15365/)
 - [Discord](https://discord.gg/qEvQrEgXdC)
