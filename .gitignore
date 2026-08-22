@@ -1,0 +1,12 @@
+# Local datasets (sample/medium/large downloads) — never commit, sizes run to tens of GB
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# Container run output
+output/
+
+# macOS
+.DS_Store
