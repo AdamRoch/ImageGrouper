@@ -135,3 +135,26 @@ Residual failures: splits of the large groups (n=12–25) still dominate; merges
 small look-alike rooms. Winner's-curse caveat: thresholds were swept on the same 69-group
 key — confirm ordering on medium-5,000 spot-check before calibrating submission settings.
 
+## Medium-set spot-check (2026-08-23)
+
+`data/medium5000/` = 2,126 labeled images (538 groups, mostly n=3/n=5 brackets, thin
+large-group tail). Spot subset `data/medium5000/spot/` via `scripts/prep_spot.py`:
+902 images / 193 groups (all 19 groups n≥8 + sampled smaller), test-conditioned.
+
+- **gamma > raw: holds emphatically** (0.689 vs 0.383; wider gap than the sample).
+- **f=0.75 ≥ f=1.0 on gamma: holds** (0.767 vs 0.689; assembles 9/19 large groups vs 5/19).
+- **norm_sqrt's extra gain did NOT replicate** (combo 0.7513 < gamma f=0.75 alone 0.7668
+  on spot) — treat lever 1 as neutral, kept only because the combo config is exactly
+  optimal on both datasets and normalization is safer under resolution/texture shift.
+- **Combo T=0.018 transfers exactly** (spot peak too). Raw-inlier optima shift between
+  datasets but sit on flat plateaus (±0.02), so exact T barely matters.
+- Submission config: **gamma + norm_sqrt + f=0.75 @ T=0.018** (0.7391 sample / 0.7513
+  spot — best-on-both). Alternative: gamma + f=0.75 raw @ T=14–17 (spot-best 0.7668).
+- Medium-specific failures: n=5 brackets are now the top split source; big groups
+  (n≥12) still split, and big groups attract cross-group members at low T.
+
+**Throughput constraint**: gamma matching ≈ 113 pairs/s locally → all-pairs covers only
+~850–1,000 images within a 30–45 min container limit at 8–16 vCPU. If the private test
+serves > ~1,000 images per run, the shortlist pre-filter escape hatch is REQUIRED before
+submission. Build it before the first submission unless test-set size is confirmed small.
+
