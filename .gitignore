@@ -4,9 +4,16 @@ data/
 # Python
 __pycache__/
 *.pyc
+.venv/
 
 # Container run output
 output/
 
+# Local pairwise-score caches from grouper.py experiments
+.grouper_cache/
+
 # macOS
 .DS_Store
+
+# Local working files (slide decks, notes) — not part of the deliverable
+*.pptx

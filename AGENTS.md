@@ -78,3 +78,39 @@ Workflow:
 - True in-browser grouping (research: `research/browser-viewpoint-grouping.md`):
   DINOv2-small/CLIP embeddings in a Web Worker + ORB/LightGlue WASM verification, with
   runtime WebGPU capability detection. Does not improve the scored algorithm.
+
+## Current state (2026-08-23)
+
+Baseline implemented and scored locally:
+
+- `grouper.py` — SIFT + Lowe ratio test (0.75) + RANSAC-homography inlier counts over all
+  pairs; parallelism via **threads, not fork-based multiprocessing** (fork + OpenCV
+  deadlocks/segfaults on macOS — one crash dialog already observed). Score matrix cached
+  in `.grouper_cache/`. Clustering policies in `POLICIES`: `verify_all` (default) and
+  `single_link`. `grouper.group_images()` matches `solution.py`'s contract;
+  `solution.py` remains the untouched starter stub until submission wiring.
+- `scripts/prep_test_sim.py` — builds `data/sample500/test_sim/` (1024px max, uuid4
+  filenames, own `manifest.csv`) to simulate test conditions.
+- `scripts/sweep_thresholds.py` — re-clusters from the cached matrix at multiple
+  thresholds and grades each (experiments cost seconds, not a re-match).
+- Local env: `.venv` on Python 3.11 (`/Users/adam/.local/bin/python3.11`) to match the
+  Docker image (`python:3.11-slim`); cv2 5.0.0, numpy, pillow. Avoid the Homebrew
+  Python 3.14 for this work.
+
+Baseline results (366 images, 69 reference groups, verify_all): best T=20 → **0.4203**
+(29/69), 5 false merges / 35 false splits. single_link is worse (best 0.3913 at T=100,
+chain-merges at low T). All-alone baseline 0.0725. Full-run runtime ~5.5 min locally
+(~207 pairs/s, 10 threads).
+
+Failure profile: splits dominate; the large groups (n=12–25) never assemble because
+extreme-exposure pairs lose texture and match weakly. Cross-group leakage (same room,
+different angle shares structure) blocks simply lowering T (false merges double at T=10).
+
+Next levers, one variable at a time from the T=20 / verify_all baseline:
+
+1. Normalized pair score (e.g. inliers / min(keypoint counts)) so texture-rich images
+   don't dominate.
+2. Exposure-invariant preprocessing (gamma / CLAHE) before matching — targets the
+   dominant split failure.
+3. Softer clustering (join if verified against a fraction of members) so large groups
+   with a few dead pairs survive.
