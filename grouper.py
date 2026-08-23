@@ -263,12 +263,43 @@ POLICIES = {
 
 # --- public API ---
 
+def normalize_score_matrix(matrix: np.ndarray, kps, mode: str) -> np.ndarray:
+    """
+    Normalize raw inlier counts by keypoint counts (lever 1):
+    "norm_sqrt" divides by sqrt(kp_i * kp_j), "norm_min" by min(kp_i, kp_j).
+    Mirrors scripts/lever1_normalized.py exactly.
+    """
+    counts = np.array([len(k) for k in kps], dtype=np.int32)
+    safe = counts.astype(np.float32).clip(1)
+    if mode == "norm_sqrt":
+        out = matrix / np.sqrt(np.outer(safe, safe))
+    elif mode == "norm_min":
+        out = matrix / np.minimum.outer(safe, safe)
+    else:
+        raise ValueError(f"unknown normalize mode {mode!r}")
+    out = out.astype(np.float32)
+    np.fill_diagonal(out, 0)
+    return out
+
+
 def group_images(image_paths: list[str], threshold: float = DEFAULT_THRESHOLD,
-                 ratio: float = RATIO_TEST, policy: str = "verify_all") -> list[list[str]]:
-    """Group images by camera angle. Returns groups of basenames."""
-    names, kps, descs = extract_features([str(p) for p in image_paths])
-    matrix = compute_score_matrix(kps, descs, ratio)
-    clusters = POLICIES[policy](matrix, threshold)
+                 ratio: float = RATIO_TEST, policy: str = "verify_all",
+                 preprocess: str = "none", normalize: str | None = None,
+                 fraction: float = 1.0, workers: int | None = None) -> list[list[str]]:
+    """
+    Group images by camera angle. Returns groups of basenames.
+
+    Defaults reproduce the raw baseline; the validated submission config is
+    preprocess="gamma", normalize="norm_sqrt", fraction=0.75, threshold=0.018.
+    """
+    names, kps, descs = extract_features([str(p) for p in image_paths], preprocess=preprocess)
+    matrix = compute_score_matrix(kps, descs, ratio, workers)
+    if normalize is not None:
+        matrix = normalize_score_matrix(matrix, kps, normalize)
+    if policy == "verify_all":
+        clusters = cluster_verify_all(matrix, threshold, fraction)
+    else:
+        clusters = POLICIES[policy](matrix, threshold)
     return [[names[i] for i in cluster] for cluster in clusters]
 
 

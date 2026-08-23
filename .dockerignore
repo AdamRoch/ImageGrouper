@@ -1,0 +1,21 @@
+# Keep the image to solution.py + grouper.py + installed deps only
+data/
+output/
+.venv/
+.grouper_cache/
+docs/
+research/
+scripts/
+*.pptx
+.git/
+evaluate.py
+AGENTS.md
+README.md
+SCORING.md
+SUBMISSION_GUIDE.md
+project-brief.md
+submission.yaml
+Dockerfile
+.dockerignore
+__pycache__/
+.DS_Store
