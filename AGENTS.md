@@ -114,3 +114,24 @@ Next levers, one variable at a time from the T=20 / verify_all baseline:
    dominant split failure.
 3. Softer clustering (join if verified against a fraction of members) so large groups
    with a few dead pairs survive.
+
+## Experiment round 1 results (2026-08-23)
+
+All levers beat baseline individually (baseline 0.4203 @ T=20 raw/verify_all):
+
+- Lever 1: geometric-mean normalization (inliers / sqrt(kp_i*kp_j)) → 0.4783 @ T=0.02.
+  min(kp) normalization HURTS (0.33) — unstable on low-texture images.
+- Lever 2 (biggest win): gamma preprocessing (median luminance → 128 LUT) → 0.6957 @ T=35,
+  **zero false merges** — much apparent cross-room leakage was exposure noise, not
+  geometry. Keypoints/image rose ~753 → 1156. CLAHE weaker (0.5362) + 3x slower matching.
+- Lever 3: verify-fraction f=0.5 on raw → 0.5942 (but doubles merges on dirty scores);
+  f=0.75 on gamma → 0.7101 with merges at 2–3.
+- Combination: gamma + norm_sqrt + f=0.75 @ T=0.018 → **0.7391 (51/69), 4 merges /
+  14 splits**. Predictions: `output/combo/predictions_combo_f0.75_T0.018.csv`.
+  Cached matrices in `.grouper_cache/` per variant (raw, gamma, clahe, norm_*, combo) —
+  sweeps reproducible in seconds via `scripts/sweep_thresholds.py --variant ...`.
+
+Residual failures: splits of the large groups (n=12–25) still dominate; merges are now
+small look-alike rooms. Winner's-curse caveat: thresholds were swept on the same 69-group
+key — confirm ordering on medium-5,000 spot-check before calibrating submission settings.
+

@@ -24,6 +24,7 @@ dir) so threshold/clustering experiments don't recompute matching.
 import argparse
 import csv
 import hashlib
+import math
 import os
 import sys
 import time
@@ -42,30 +43,49 @@ DEFAULT_THRESHOLD = 40    # inlier count separating "same angle" from "different
 
 CACHE_DIR = Path(".grouper_cache")
 
+# exposure-invariant preprocessing variants (experiment levers; "none" is the baseline)
+PREPROCESSORS = ("none", "gamma", "clahe")
+GAMMA_TARGET_MEDIAN = 128.0
+
 # --- matching state (set by compute_score_matrix before the thread pool starts) ---
 _KP = None      # list of float32 keypoint coordinate arrays, one per image
 _DESC = None    # list of float32 descriptor arrays
 _RATIO = RATIO_TEST
 
 
-def load_gray(path: str, max_dim: int = MATCH_MAX_DIM) -> np.ndarray:
-    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+def _gamma_normalize(img: np.ndarray) -> np.ndarray:
+    """Stretch each image's median luminance to a canonical target via a gamma LUT."""
+    median = min(max(float(np.median(img)), 1.0), 254.0)
+    gamma = math.log(GAMMA_TARGET_MEDIAN / 255.0) / math.log(median / 255.0)
+    lut = np.clip((np.arange(256) / 255.0) ** gamma * 255.0, 0, 255).astype(np.uint8)
+    return cv2.LUT(img, lut)
+
+
+def load_gray(path: str, max_dim: int = MATCH_MAX_DIM, preprocess: str = "none") -> np.ndarray:
+    if preprocess not in PREPROCESSORS:
+        raise ValueError(f"unknown preprocess {preprocess!r}, expected one of {PREPROCESSORS}")
+    img = cv2.imread(path, cv2.IMREAD_COLOR if preprocess == "clahe" else cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise ValueError(f"cannot read image: {path}")
-    h, w = img.shape
+    h, w = img.shape[:2]
     if max(h, w) > max_dim:
         scale = max_dim / max(h, w)
         img = cv2.resize(img, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+    if preprocess == "gamma":
+        return _gamma_normalize(img)
+    if preprocess == "clahe":
+        luminance = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)[:, :, 0]
+        return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(luminance)
     return img
 
 
-def extract_features(paths: list[str], max_dim: int = MATCH_MAX_DIM):
+def extract_features(paths: list[str], max_dim: int = MATCH_MAX_DIM, preprocess: str = "none"):
     """Return (names, keypoint arrays, descriptor arrays). Sequential — fast enough (~0.1s/img)."""
     sift = cv2.SIFT_create()
     names, kps, descs = [], [], []
     t0 = time.time()
     for i, p in enumerate(paths, 1):
-        img = load_gray(p, max_dim)
+        img = load_gray(p, max_dim, preprocess)
         kp, desc = sift.detectAndCompute(img, None)
         pts = np.array([k.pt for k in kp], dtype=np.float32) if kp else np.zeros((0, 2), np.float32)
         names.append(os.path.basename(p))
@@ -133,9 +153,10 @@ def compute_score_matrix(kps, descs, ratio: float = RATIO_TEST, workers: int | N
 
 # --- cache (matrix only; features are cheap to recompute) ---
 
-def cache_path_for(images_dir: str) -> Path:
+def cache_path_for(images_dir: str, tag: str = "") -> Path:
     key = hashlib.md5(os.path.abspath(images_dir).encode()).hexdigest()[:12]
-    return CACHE_DIR / f"scores_{key}.npz"
+    suffix = f"_{tag}" if tag else ""
+    return CACHE_DIR / f"scores_{key}{suffix}.npz"
 
 
 def load_cached_matrix(path: Path, names: list[str]) -> np.ndarray | None:
@@ -167,19 +188,24 @@ def candidate_edges(matrix: np.ndarray, threshold: float):
     return edges
 
 
-def cluster_verify_all(matrix: np.ndarray, threshold: float) -> list[list[int]]:
+def cluster_verify_all(matrix: np.ndarray, threshold: float, fraction: float = 1.0) -> list[list[int]]:
     """
     Verify-then-merge: process candidate edges strongest-first. A candidate
-    image joins a group only if it verifies (inliers >= threshold) against
-    ALL current members; two groups merge only if every cross pair verifies.
-    Unassigned images become singletons.
+    image joins a group only if it verifies (score >= threshold) against at
+    least ceil(fraction * size) of the group's current members; fraction=1.0
+    is the strict ALL-members baseline. Two groups merge only if every member
+    of one verifies against the other. Unassigned images become singletons.
     """
+
+    def make_verifier(members):
+        need = max(1, math.ceil(fraction * len(members)))
+        if need >= len(members):
+            return lambda idx: all(matrix[idx, m] >= threshold for m in members)
+        return lambda idx: sum(matrix[idx, m] >= threshold for m in members) >= need
+
     n = matrix.shape[0]
     groups: list[list[int] | None] = []
     membership: dict[int, int] = {}
-
-    def verifies(idx, members):
-        return all(matrix[idx, m] >= threshold for m in members)
 
     for _, i, j in candidate_edges(matrix, threshold):
         gi, gj = membership.get(i), membership.get(j)
@@ -187,15 +213,15 @@ def cluster_verify_all(matrix: np.ndarray, threshold: float) -> list[list[int]]:
             membership[i] = membership[j] = len(groups)
             groups.append([i, j])
         elif gi is None:
-            if verifies(i, groups[gj]):
+            if make_verifier(groups[gj])(i):
                 groups[gj].append(i)
                 membership[i] = gj
         elif gj is None:
-            if verifies(j, groups[gi]):
+            if make_verifier(groups[gi])(j):
                 groups[gi].append(j)
                 membership[j] = gi
         elif gi != gj:
-            if all(verifies(a, groups[gj]) for a in groups[gi]):
+            if all(make_verifier(groups[gj])(a) for a in groups[gi]):
                 groups[gi].extend(groups[gj])
                 for m in groups[gj]:
                     membership[m] = gi
@@ -265,6 +291,10 @@ def main():
                         help=f"inlier threshold for same-angle edges (default {DEFAULT_THRESHOLD})")
     parser.add_argument("--ratio", type=float, default=RATIO_TEST, help="Lowe ratio (default 0.75)")
     parser.add_argument("--policy", choices=sorted(POLICIES), default="verify_all")
+    parser.add_argument("--fraction", "-f", type=float, default=1.0,
+                        help="verify-fraction for verify_all joins (default 1.0 = all members)")
+    parser.add_argument("--preprocess", choices=PREPROCESSORS, default="none",
+                        help="exposure-invariant preprocessing before SIFT (own cache file)")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--no-cache", action="store_true", help="ignore/refresh the score cache")
     args = parser.parse_args()
@@ -274,15 +304,16 @@ def main():
                    if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
     if not paths:
         sys.exit(f"no images found in {args.images}")
-    print(f"{len(paths)} images in {args.images}")
+    print(f"{len(paths)} images in {args.images} (preprocess={args.preprocess})")
 
     names = [os.path.basename(p) for p in paths]
-    cache_path = cache_path_for(args.images)
+    cache_tag = "" if args.preprocess == "none" else args.preprocess
+    cache_path = cache_path_for(args.images, cache_tag)
     matrix = None if args.no_cache else load_cached_matrix(cache_path, names)
 
     if matrix is None:
         t0 = time.time()
-        names, kps, descs = extract_features(paths)
+        names, kps, descs = extract_features(paths, preprocess=args.preprocess)
         t_feat = time.time() - t0
         t0 = time.time()
         matrix = compute_score_matrix(kps, descs, args.ratio, args.workers)
@@ -291,10 +322,11 @@ def main():
         print(f"timing: features {t_feat:.1f}s, pairwise matching {t_match:.1f}s")
 
     t0 = time.time()
-    clusters = POLICIES[args.policy](matrix, args.threshold)
+    clusters = POLICIES[args.policy](matrix, args.threshold) if args.policy != "verify_all" \
+        else cluster_verify_all(matrix, args.threshold, args.fraction)
     groups = [[names[i] for i in cluster] for cluster in clusters]
     write_predictions(groups, args.out)
-    print(f"clustering ({args.policy}, T={args.threshold:g}): "
+    print(f"clustering ({args.policy}, T={args.threshold:g}, f={args.fraction:g}): "
           f"{len(groups)} groups in {time.time() - t0:.2f}s")
     print(f"wrote {args.out}  (total {time.time() - t_start:.1f}s)")
 
