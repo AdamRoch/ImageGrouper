@@ -241,3 +241,33 @@ allocation vs integration risk.
 capacity ~550–700 images per 45-min cpu-xlarge run (was ~900–1,100). Shortlist
 pre-filter becomes REQUIRED above that batch size if this config is wired into
 `solution.py`.
+
+## Merge-side round: camera-translation guard — BREAKTHROUGH (2026-08-24)
+
+Levers (`scripts/merge_guards.py` + `apply_guards.py`; guards zero blocked candidate
+edges before clustering):
+
+- Lever A (door-check residual, coherent-blob after alignment): separability was real
+  (P(cross>true) 0.93–0.99) but it blocks ~16% of true load-bearing links → splits
+  rise, net never beats current. **FAILED the gate.**
+- Lever B (camera-translation / cheirality guard): candidate pairs ≥T get re-matched
+  with homography + essential-matrix pose decomposition; the discriminating signature
+  is the **cheirality ratio** (fraction of matched points triangulating in front of
+  both cameras under best pose): true same-position pairs median ~0.001–0.004,
+  cross-group ~0.63–0.9. Block candidate edges with cheirality ≥ 0.5. (Essential
+  inlier ratio was a dud — rotation-only pairs still admit high-inlier fits.)
+  **PASSED all gates.** Holdout confirmation (pre-registered T=0.025): **0.8145 →
+  0.8870** (+25 exact groups; merges 32 → 9, splits 32 → 30). Blocked 25,267 holdout
+  candidate edges of which only 10 were true links — surgical.
+- Rider C (widen histeq band below 0.3×T): NEGATIVE — ~220 impostor edges per ~4 true
+  links rescued. Deep orphans are unrecoverable at affordable impostor cost with this
+  matcher.
+
+Score trajectory (holdout): 0.7449 → 0.8145 → **0.8870**. Recommended v3 container
+config: histeq + cheirality guard @ T=0.025 (best combined three-set score, fewest
+merges); T=0.022 the close alternative (0.8116/0.8290/0.8841). Guard cost: re-match +
+pose for candidate pairs ≥T (~7% of pairs) ≈ 1.2× v2 cost.
+
+Incident note: a rider-C run clobbered the sample histeq cache mid-round; restored
+bitwise from a refactor-check backup and the script now suffixes non-default band
+outputs. Fully recovered, all grades re-verified.

@@ -180,14 +180,18 @@ def main():
 
     out_dir = Path("output/reverify")
     out_dir.mkdir(parents=True, exist_ok=True)
-    np.savez(out_dir / f"measure_{args.lever}_{Path(args.images).parent.name}_{Path(args.images).name}.npz",
+    # non-default band ranges get their own file/tag so they never clobber
+    # the default-band artifacts
+    band_suffix = "" if (args.band_lo, args.band_hi) == (0.3, 1.2) \
+        else f"_band{args.band_lo:g}_{args.band_hi:g}"
+    np.savez(out_dir / f"measure_{args.lever}{band_suffix}_{Path(args.images).parent.name}_{Path(args.images).name}.npz",
              i=ii, j=jj, old=old, new=new, in_group=in_group)
 
     # --- upgrade matrix: max(old, new) on re-matched pairs ---
     upgraded = matrix.copy()
     upgraded[ii, jj] = np.maximum(old, new)
     upgraded[jj, ii] = upgraded[ii, jj]
-    tag = f"gamma_norm_sqrt_{args.lever}"
+    tag = f"gamma_norm_sqrt_{args.lever}{band_suffix}"
     grouper.save_cached_matrix(grouper.cache_path_for(args.images, tag), names, upgraded)
     print(f"upgraded matrix saved with tag {tag!r} — grade with:\n"
           f"  .venv/bin/python scripts/sweep_thresholds.py --images {args.images} "
