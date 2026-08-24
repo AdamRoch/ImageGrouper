@@ -42,6 +42,13 @@ RANSAC_THRESH = 5.0       # px reprojection threshold for findHomography
 MIN_GOOD_MATCHES = 8      # below this, don't bother with RANSAC
 DEFAULT_THRESHOLD = 40    # inlier count separating "same angle" from "different angle"
 
+# Re-verify band anchor (pair-directed exposure equalization, the "histeq"
+# lever): the band is defined as [0.3, 1.2] x this reference T on the
+# normalized matrix. Calibrated on the workshop sets; deliberately NOT the
+# clustering threshold (0.022) so the band reproduces the validated runs.
+BAND_REF_T = 0.018
+REVERIFY_MIN_GAP = 1.3    # min raw-luminance ratio for a pair to be re-verified
+
 CACHE_DIR = Path(".grouper_cache")
 
 # exposure-invariant preprocessing variants (experiment levers; "none" is the baseline)
@@ -152,7 +159,109 @@ def compute_score_matrix(kps, descs, ratio: float = RATIO_TEST, workers: int | N
     return matrix
 
 
-# --- cache (matrix only; features are cheap to recompute) ---
+# --- pair-directed exposure equalization re-verify ("histeq" lever) ---
+#
+# Band pairs (borderline scores with a big raw-luminance gap) are re-matched
+# after histogram-matching the darker image onto the brighter one's tonal
+# distribution. Reference: scripts/reverify_band.py, which now imports these
+# helpers. Validated: sample 0.7391 -> 0.8116, spot 0.7513 -> 0.7927,
+# holdout 0.7449 -> 0.8145 (T=0.022, f=0.75, max-upgrade semantics).
+
+def hist_match(src: np.ndarray, ref: np.ndarray) -> np.ndarray:
+    """Map src's tonal distribution onto ref's (CDF matching, uint8)."""
+    s = np.bincount(src.ravel(), minlength=256).astype(np.float64)
+    r = np.bincount(ref.ravel(), minlength=256).astype(np.float64)
+    scdf = np.cumsum(s) / s.sum()
+    rcdf = np.cumsum(r) / r.sum()
+    lut = np.interp(scdf, rcdf, np.arange(256))
+    return cv2.LUT(src, np.clip(lut, 0, 255).astype(np.uint8))
+
+
+def detect(sift, img):
+    """detectAndCompute -> (float32 Nx2 points, float32 Nx128 descriptors)."""
+    kp, desc = sift.detectAndCompute(img, None)
+    pts = np.array([k.pt for k in kp], dtype=np.float32) if kp else np.zeros((0, 2), np.float32)
+    return pts, (desc if desc is not None else np.zeros((0, 128), np.float32))
+
+
+def match_features(pts_i, d_i, pts_j, d_j, bf, ratio: float = RATIO_TEST) -> int:
+    """RANSAC homography inlier count for pre-computed features."""
+    if len(d_i) < 2 or len(d_j) < 2:
+        return 0
+    good = []
+    for pair in bf.knnMatch(d_i, d_j, k=2):
+        if len(pair) == 2:
+            m, n = pair
+            if m.distance < ratio * n.distance:
+                good.append(m)
+    if len(good) < MIN_GOOD_MATCHES:
+        return 0
+    src = pts_i[[m.queryIdx for m in good]]
+    dst = pts_j[[m.trainIdx for m in good]]
+    _, mask = cv2.findHomography(src, dst, cv2.RANSAC, RANSAC_THRESH)
+    return int(mask.sum()) if mask is not None else 0
+
+
+def reverify_histeq(matrix: np.ndarray, image_paths: list[str], luminance,
+                    kps, descs, band_ref_t: float = BAND_REF_T,
+                    band_lo: float = 0.3, band_hi: float = 1.2,
+                    min_gap: float = REVERIFY_MIN_GAP,
+                    workers: int | None = None) -> np.ndarray:
+    """
+    Max-upgrade re-verify of the borderline band of a NORMALIZED matrix:
+    pairs scoring [band_lo, band_hi] x band_ref_t with raw-luminance gap
+    >= min_gap are re-matched after histogram equalization of the darker
+    side; the pair's score becomes max(old, new). Score-only band — no
+    manifest knowledge. kps/descs are the base (gamma) detections, reused as
+    the brighter side's features.
+    """
+    luminance = np.asarray(luminance, dtype=np.float64)
+    n = len(image_paths)
+    iu = np.triu_indices(n, 1)
+    vals = matrix[iu]
+    in_band = (vals >= band_lo * band_ref_t) & (vals <= band_hi * band_ref_t)
+    pairs = []
+    for i, j in zip(iu[0][in_band].tolist(), iu[1][in_band].tolist()):
+        lo, hi = min(luminance[i], luminance[j]), max(luminance[i], luminance[j])
+        if hi / max(lo, 1e-6) >= min_gap:
+            pairs.append((int(i), int(j)))
+    print(f"  reverify: {len(pairs):,} band pairs (of {len(vals):,}) qualify", flush=True)
+    if not pairs:
+        return matrix
+
+    t0 = time.time()
+    images = [load_gray(p, preprocess="gamma") for p in image_paths]
+    print(f"  reverify: loaded {n} gamma images ({time.time() - t0:.1f}s)", flush=True)
+
+    def run_batch(batch):
+        bf = cv2.BFMatcher(cv2.NORM_L2)
+        sift = cv2.SIFT_create()
+        out = []
+        for i, j in batch:
+            dark, bright = (i, j) if luminance[i] <= luminance[j] else (j, i)
+            pts_d, d_d = detect(sift, hist_match(images[dark], images[bright]))
+            inl = match_features(pts_d, d_d, kps[bright], descs[bright], bf)
+            kd, kb = max(len(pts_d), 1), max(len(kps[bright]), 1)
+            out.append((i, j, inl / float(np.sqrt(kd * kb))))
+        return out
+
+    batches = [pairs[k:k + 500] for k in range(0, len(pairs), 500)]
+    workers = workers or os.cpu_count() or 4
+    t0 = time.time()
+    done = 0
+    upgraded = matrix.copy()
+    with ThreadPoolExecutor(workers) as pool:
+        for result in pool.map(run_batch, batches):
+            for i, j, score in result:
+                if score > upgraded[i, j]:
+                    upgraded[i, j] = upgraded[j, i] = score
+            done += len(result)
+            if done % 10000 < 500 or done == len(pairs):
+                print(f"  reverify: {done}/{len(pairs)} pairs ({time.time() - t0:.1f}s)",
+                      flush=True)
+    print(f"  reverify: done in {time.time() - t0:.1f}s", flush=True)
+    return upgraded
+
 
 def cache_path_for(images_dir: str, tag: str = "") -> Path:
     key = hashlib.md5(os.path.abspath(images_dir).encode()).hexdigest()[:12]
@@ -458,17 +567,27 @@ def normalize_score_matrix(matrix: np.ndarray, kps, mode: str) -> np.ndarray:
 def group_images(image_paths: list[str], threshold: float = DEFAULT_THRESHOLD,
                  ratio: float = RATIO_TEST, policy: str = "verify_all",
                  preprocess: str = "none", normalize: str | None = None,
-                 fraction: float = 1.0, workers: int | None = None) -> list[list[str]]:
+                 fraction: float = 1.0, workers: int | None = None,
+                 reverify: str | None = None) -> list[list[str]]:
     """
     Group images by camera angle. Returns groups of basenames.
 
-    Defaults reproduce the raw baseline; the validated submission config is
-    preprocess="gamma", normalize="norm_sqrt", fraction=0.75, threshold=0.018.
+    Defaults reproduce the raw baseline. The validated submission config:
+    preprocess="gamma", normalize="norm_sqrt", reverify="histeq",
+    fraction=0.75, threshold=0.022.
     """
-    names, kps, descs = extract_features([str(p) for p in image_paths], preprocess=preprocess)
+    paths = [str(p) for p in image_paths]
+    names, kps, descs = extract_features(paths, preprocess=preprocess)
     matrix = compute_score_matrix(kps, descs, ratio, workers)
     if normalize is not None:
         matrix = normalize_score_matrix(matrix, kps, normalize)
+    if reverify is not None:
+        if reverify != "histeq":
+            raise ValueError(f"unknown reverify mode {reverify!r}")
+        t0 = time.time()
+        luminance = np.array([load_gray(p).mean() for p in paths], dtype=np.float32)
+        print(f"  reverify: luminance pass ({time.time() - t0:.1f}s)", flush=True)
+        matrix = reverify_histeq(matrix, paths, luminance, kps, descs, workers=workers)
     if policy == "verify_all":
         clusters = cluster_verify_all(matrix, threshold, fraction)
     else:

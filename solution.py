@@ -6,11 +6,16 @@ Reads test images from /input/images/ and writes predictions.csv to /output/.
 Algorithm (validated config, see grouper.py):
   SIFT on gamma-normalized grayscale (per-image median luminance -> 128),
   all-pairs knnMatch + Lowe ratio test + RANSAC homography inliers, score
-  normalized by sqrt(kp_i * kp_j), then verify-then-merge clustering where a
-  candidate joins a group if it verifies (score >= T) against >= 75% of the
-  group's current members (T = 0.018).
+  normalized by sqrt(kp_i * kp_j), then a pair-directed exposure
+  equalization re-verify pass (borderline band 0.3-1.2 x 0.018 with raw
+  luminance gap >= 1.3: histogram-match the darker image onto the brighter
+  one's tonal distribution, re-detect, max-upgrade the pair score), then
+  verify-then-merge clustering where a candidate joins a group if it
+  verifies (score >= T) against >= 75% of the group's current members
+  (T = 0.022).
 
-Local scores: 0.7391 on sample-500 test sim, 0.7513 on medium spot-check.
+Local scores: 0.8116 on sample-500 test sim, 0.7927 on medium spot-check,
+0.8145 on the medium holdout.
 
 Contract:
     Input:  /input/images/  — JPEG images from a single photoshoot (read-only)
@@ -34,8 +39,9 @@ INPUT_DIR = Path("/input/images")
 OUTPUT_DIR = Path("/output")
 SUPPORTED = {".jpg", ".jpeg", ".png"}
 
-# Validated on sample-500 (0.7391) and medium spot-check (0.7513)
-CONFIG = dict(preprocess="gamma", normalize="norm_sqrt", fraction=0.75, threshold=0.018)
+# Validated on sample-500 (0.8116), medium spot-check (0.7927), holdout (0.8145)
+CONFIG = dict(preprocess="gamma", normalize="norm_sqrt", reverify="histeq",
+              fraction=0.75, threshold=0.022)
 
 
 def group_images(image_paths: list[str]) -> list[list[str]]:

@@ -39,43 +39,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import grouper
+from grouper import detect, hist_match, match_features
 
 T = 0.018  # current config threshold on the normalized matrix
 RATIO = grouper.RATIO_TEST
-
-
-def hist_match(src: np.ndarray, ref: np.ndarray) -> np.ndarray:
-    """Map src's tonal distribution onto ref's (CDF matching, uint8)."""
-    s = np.bincount(src.ravel(), minlength=256).astype(np.float64)
-    r = np.bincount(ref.ravel(), minlength=256).astype(np.float64)
-    scdf = np.cumsum(s) / s.sum()
-    rcdf = np.cumsum(r) / r.sum()
-    lut = np.interp(scdf, rcdf, np.arange(256))
-    return cv2.LUT(src, np.clip(lut, 0, 255).astype(np.uint8))
-
-
-def match_features(pts_i, d_i, pts_j, d_j, bf) -> int:
-    """RANSAC inlier count for pre-computed features (mirrors grouper.pair_inliers)."""
-    if len(d_i) < 2 or len(d_j) < 2:
-        return 0
-    good = []
-    for pair in bf.knnMatch(d_i, d_j, k=2):
-        if len(pair) == 2:
-            m, n = pair
-            if m.distance < RATIO * n.distance:
-                good.append(m)
-    if len(good) < grouper.MIN_GOOD_MATCHES:
-        return 0
-    src = pts_i[[m.queryIdx for m in good]]
-    dst = pts_j[[m.trainIdx for m in good]]
-    _, mask = cv2.findHomography(src, dst, cv2.RANSAC, grouper.RANSAC_THRESH)
-    return int(mask.sum()) if mask is not None else 0
-
-
-def detect(sift, img):
-    kp, desc = sift.detectAndCompute(img, None)
-    pts = np.array([k.pt for k in kp], dtype=np.float32) if kp else np.zeros((0, 2), np.float32)
-    return pts, (desc if desc is not None else np.zeros((0, 128), np.float32))
 
 
 def auc(pos, neg, seed=0, draws=200_000):
