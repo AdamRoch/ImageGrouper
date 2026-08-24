@@ -451,6 +451,79 @@ def cluster_verify_rescue(matrix: np.ndarray, threshold: float, luminance,
     return result
 
 
+def guards_to_matrices(guards_npz: str, n: int):
+    """Assemble symmetric (blob, cheir) matrices from a merge_guards npz."""
+    d = np.load(guards_npz)
+    blob = np.full((n, n), np.nan, dtype=np.float32)
+    cheir = np.full((n, n), np.nan, dtype=np.float32)
+    blob[d["i"], d["j"]] = d["blob"]
+    blob[d["j"], d["i"]] = d["blob"]
+    cheir[d["i"], d["j"]] = d["cheir"]
+    cheir[d["j"], d["i"]] = d["cheir"]
+    return blob, cheir
+
+
+def cluster_guard_rescue(matrix: np.ndarray, threshold: float,
+                         blob_m: np.ndarray, cheir_m: np.ndarray,
+                         fraction: float = 0.75, blob_cut: float = 0.35,
+                         cheir_cut: float = 0.5, rescue_lo: float = 0.3) -> list[list[int]]:
+    """
+    Lever D: guarded verify-then-merge + guard-gated weak-link rescue.
+
+    Stage 1 = lever B exactly: candidate edges with cheirality >= cheir_cut
+    (camera moved) are blocked; verify-then-merge (fraction rule) runs on the
+    rest. Stage 2 (rescue): an image left unassigned may join a >= 2-member
+    group when it has a weak link in [rescue_lo*T, T) to some member that
+    physically verifies — cheirality < cheir_cut AND aligned-residual blob
+    < blob_cut (camera still, scene unchanged). Rescue candidates are
+    processed strongest-link-first; joins extend groups and may enable
+    further rescues (single pass over candidates, repeated until stable).
+    NaN guard metrics = no evidence = never blocks, never rescues.
+    """
+    n = matrix.shape[0]
+    blocked = np.zeros((n, n), dtype=bool)
+    ok = ~np.isnan(cheir_m)
+    blocked[ok & (cheir_m >= cheir_cut)] = True
+
+    eff = matrix.copy()
+    eff[blocked] = 0.0
+    clusters = cluster_verify_all(eff, threshold, fraction)
+
+    groups: list[list[int]] = [list(c) for c in clusters]
+    membership: dict[int, int] = {}
+    for gi, g in enumerate(groups):
+        for m in g:
+            membership[m] = gi
+
+    # sparse per-image rescue-band links (on the ORIGINAL matrix)
+    rescue_ok = ~np.isnan(blob_m) & ~np.isnan(cheir_m) & (cheir_m < cheir_cut) & (blob_m < blob_cut)
+    band_links: list[list[tuple[int, float]]] = [[] for _ in range(n)]
+    for i in range(n):
+        for j in np.flatnonzero((matrix[i] >= rescue_lo * threshold) & (matrix[i] < threshold) & rescue_ok[i]):
+            band_links[i].append((int(j), float(matrix[i, j])))
+    for links in band_links:
+        links.sort(key=lambda t: -t[1])
+
+    changed = True
+    while changed:
+        changed = False
+        for i in range(n):
+            gi = membership[i]
+            if len(groups[gi]) > 1 or not band_links[i]:
+                continue  # only singletons (unassigned images) are rescue candidates
+            best_g, best_s = None, rescue_lo * threshold
+            for m, s in band_links[i]:
+                g = membership[m]
+                if g != gi and len(groups[g]) >= 2 and s >= best_s:
+                    best_g, best_s = g, s
+            if best_g is not None:
+                groups[best_g].append(i)
+                groups[gi] = []
+                membership[i] = best_g
+                changed = True
+    return [g for g in groups if g]
+
+
 def cluster_verify_chain(matrix: np.ndarray, threshold: float, luminance,
                          merge_fraction: float = 0.75) -> list[list[int]]:
     """
@@ -540,6 +613,7 @@ POLICIES = {
     "rescue": cluster_verify_rescue,  # needs luminance too
     "rescue_guarded": lambda matrix, threshold, luminance, fraction=0.75:
         cluster_verify_rescue(matrix, threshold, luminance, fraction, global_guard=True),
+    "guard_rescue": cluster_guard_rescue,  # needs guards npz — sweep script supplies matrices
 }
 
 

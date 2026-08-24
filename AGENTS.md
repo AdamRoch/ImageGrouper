@@ -271,3 +271,23 @@ pose for candidate pairs ≥T (~7% of pairs) ≈ 1.2× v2 cost.
 Incident note: a rider-C run clobbered the sample histeq cache mid-round; restored
 bitwise from a refactor-check backup and the script now suffixes non-default band
 outputs. Fully recovered, all grades re-verified.
+
+## Guard-gated rescue round — NEGATIVE, config final (2026-08-24)
+
+Lever D (rescue joins for sub-T links gated on cheirality <0.5 AND residual blob
+<0.35): **FAILED the workshop gate.** Relative separation is excellent (~100–175:1),
+but the cross-group population is ~650× larger, so absolute pass-through is ~4
+impostors per true link — the base-rate problem. Recovered splits but reintroduced
+the merges the guard had just eliminated (spot merges 2→7). No T wins both sets.
+Half of band pairs yield no homography at all (no evidence either way).
+
+Lever E (LightGlue for dead pairs): skipped per precondition — rider C showed the
+sub-0.3×T population is 98%+ impostor after histeq; recorded as standing contingency
+with a pessimistic prior.
+
+**Final config: gamma + norm_sqrt + histeq re-verify + cheirality guard (≥0.5 blocks)
++ f=0.75 @ T=0.025 → 0.8551 sample / 0.8187 spot / 0.8870 holdout** (T=0.022 the
+robust alternative: 0.8116/0.8290/0.8841). Residual error (9 merges / 30 splits) is
+dominated by deep orphans unrecoverable at affordable impostor cost with this matcher
+— the pipeline has converged; ~0.89 is the honest ceiling. Holdout stays sealed after
+the lever-B confirmation.

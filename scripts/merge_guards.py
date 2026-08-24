@@ -120,9 +120,10 @@ def report(name, values, in_group, higher_is_cross=True):
                   f"p75 {np.percentile(v,75):.3f} p90 {np.percentile(v,90):.3f}")
         rng = np.random.default_rng(0)
         draws = 200_000
-        a = (pos if higher_is_cross else neg)[rng.integers(0, len(pos if higher_is_cross else neg), draws)]
-        b = (neg if higher_is_cross else pos)[rng.integers(0, len(neg if higher_is_cross else pos), draws)]
-        print(f"    AUC (cross > true): {(a > b).mean() + 0.5*(a == b).mean():.3f}")
+        cross_s = neg[rng.integers(0, len(neg), draws)]
+        true_s = pos[rng.integers(0, len(pos), draws)]
+        auc = (cross_s > true_s).mean() + 0.5 * (cross_s == true_s).mean()
+        print(f"    AUC P(cross > true): {auc:.3f} (higher = better separation)")
 
 
 def main():
@@ -130,6 +131,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--images", required=True)
     parser.add_argument("--manifest", required=True)
+    parser.add_argument("--min-score", type=float, default=T,
+                        help=f"measure pairs with score >= this (default {T}; "
+                             f"0.3xT covers the rescue band)")
     args = parser.parse_args()
 
     paths = sorted(Path(args.images).glob("*.jpg"))
@@ -143,9 +147,9 @@ def main():
     gids = np.array([f2g[nm] for nm in names])
 
     iu = np.triu_indices(n, 1)
-    cand = matrix[iu] >= T
+    cand = matrix[iu] >= args.min_score
     pairs = list(zip(iu[0][cand].tolist(), iu[1][cand].tolist()))
-    print(f"{n} images, {len(pairs):,} candidate pairs >= {T}")
+    print(f"{n} images, {len(pairs):,} candidate pairs >= {args.min_score}")
 
     t0 = time.time()
     _IMGS = [grouper.load_gray(str(p), preprocess="gamma") for p in paths]

@@ -45,6 +45,15 @@ def main():
     if args.policy in ("chain", "rescue", "rescue_guarded"):
         luminance = grouper.load_or_compute_luminance(args.images, names)
 
+    guard_mats = None
+    if args.policy == "guard_rescue":
+        tag = f"{Path(args.images).parent.name}_{Path(args.images).name}"
+        guards_npz = Path("output/reverify") / f"guards_{tag}.npz"
+        if not guards_npz.exists():
+            sys.exit(f"no guards measurement at {guards_npz} — run scripts/merge_guards.py first")
+        guard_mats = grouper.guards_to_matrices(str(guards_npz), len(names))
+        print(f"  loaded guard metrics from {guards_npz}")
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -53,7 +62,9 @@ def main():
     print(f"variant={args.variant or 'raw'}  policy={args.policy}  f={args.fraction:g}  ({len(names)} images)")
     print(f"{'T':>8} {'score':>7} {'exact':>10} {'pred_groups':>11} {'false_merge':>11} {'false_split':>11}")
     for t in [float(x) for x in args.thresholds.split(",")]:
-        if args.policy in ("chain", "rescue", "rescue_guarded"):
+        if args.policy == "guard_rescue":
+            clusters = grouper.cluster_guard_rescue(matrix, t, *guard_mats, args.fraction)
+        elif args.policy in ("chain", "rescue", "rescue_guarded"):
             clusters = grouper.POLICIES[args.policy](matrix, t, luminance, args.fraction)
         elif args.policy == "verify_all" and args.fraction != 1.0:
             clusters = grouper.cluster_verify_all(matrix, t, args.fraction)
