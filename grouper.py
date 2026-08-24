@@ -22,6 +22,7 @@ dir) so threshold/clustering experiments don't recompute matching.
 """
 
 import argparse
+import bisect
 import csv
 import hashlib
 import math
@@ -177,6 +178,32 @@ def save_cached_matrix(path: Path, names: list[str], matrix: np.ndarray):
     print(f"  saved score matrix cache to {path}")
 
 
+def luminance_path_for(images_dir: str) -> Path:
+    key = hashlib.md5(os.path.abspath(images_dir).encode()).hexdigest()[:12]
+    return CACHE_DIR / f"luminance_{key}.npy"
+
+
+def load_or_compute_luminance(images_dir: str, names: list[str]) -> np.ndarray:
+    """
+    Raw mean grayscale luminance per image (no exposure preprocessing — the
+    chain policy needs the true exposure ordering). Cached per image dir;
+    array aligned with `names` (sorted dir listing, same as score matrices).
+    """
+    path = luminance_path_for(images_dir)
+    if path.exists():
+        data = np.load(path)
+        if len(data) == len(names):
+            print(f"  loaded cached luminance from {path}")
+            return data
+    values = np.zeros(len(names), dtype=np.float32)
+    for i, name in enumerate(names):
+        values[i] = float(load_gray(os.path.join(images_dir, name)).mean())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(path, values)
+    print(f"  computed + cached luminance to {path}")
+    return values
+
+
 # --- clustering (operates on the score matrix only, so policies are swappable) ---
 
 def candidate_edges(matrix: np.ndarray, threshold: float):
@@ -186,6 +213,14 @@ def candidate_edges(matrix: np.ndarray, threshold: float):
              if matrix[i, j] >= threshold]
     edges.sort(reverse=True)
     return edges
+
+
+def _fraction_verifier(matrix: np.ndarray, threshold: float, fraction: float, members):
+    """Predicate: idx verifies against >= ceil(fraction * len(members)) of members."""
+    need = max(1, math.ceil(fraction * len(members)))
+    if need >= len(members):
+        return lambda idx: all(matrix[idx, m] >= threshold for m in members)
+    return lambda idx: sum(matrix[idx, m] >= threshold for m in members) >= need
 
 
 def cluster_verify_all(matrix: np.ndarray, threshold: float, fraction: float = 1.0) -> list[list[int]]:
@@ -198,10 +233,7 @@ def cluster_verify_all(matrix: np.ndarray, threshold: float, fraction: float = 1
     """
 
     def make_verifier(members):
-        need = max(1, math.ceil(fraction * len(members)))
-        if need >= len(members):
-            return lambda idx: all(matrix[idx, m] >= threshold for m in members)
-        return lambda idx: sum(matrix[idx, m] >= threshold for m in members) >= need
+        return _fraction_verifier(matrix, threshold, fraction, members)
 
     n = matrix.shape[0]
     groups: list[list[int] | None] = []
@@ -222,6 +254,66 @@ def cluster_verify_all(matrix: np.ndarray, threshold: float, fraction: float = 1
                 membership[j] = gi
         elif gi != gj:
             if all(make_verifier(groups[gj])(a) for a in groups[gi]):
+                groups[gi].extend(groups[gj])
+                for m in groups[gj]:
+                    membership[m] = gi
+                groups[gj] = None
+
+    result = [g for g in groups if g]
+    assigned = set(membership)
+    result.extend([[i] for i in range(n) if i not in assigned])
+    return result
+
+
+def cluster_verify_chain(matrix: np.ndarray, threshold: float, luminance,
+                         merge_fraction: float = 0.75) -> list[list[int]]:
+    """
+    Exposure-adjacent chain verification (lever 2): like verify-then-merge,
+    but the JOIN rule is exposure-local. Groups are treated as exposure chains:
+    members are kept sorted by raw mean luminance, and a candidate joins if it
+    verifies (score >= threshold — the geometric entry fee) against ALL of its
+    exposure-adjacent neighbors in the augmented ordering (1 neighbor at a
+    chain end, 2 in the middle). This lets extreme exposures ride dark->mid->
+    bright links instead of requiring a direct dark<->bright match.
+
+    Merge discipline is unchanged from verify_all: two groups merge only if
+    every member of one verifies against >= ceil(merge_fraction * size) of the
+    other. Unassigned images become singletons.
+
+    `luminance` is a per-image array aligned with the matrix indices.
+    """
+    luminance = np.asarray(luminance, dtype=np.float64)
+    n = matrix.shape[0]
+    groups: list[list[int] | None] = []
+    membership: dict[int, int] = {}
+
+    def chain_verifies(idx, members):
+        ordered = sorted(members, key=lambda m: (luminance[m], m))
+        keys = [(luminance[m], m) for m in ordered]
+        pos = bisect.bisect_left(keys, (luminance[idx], idx))
+        neighbors = []
+        if pos > 0:
+            neighbors.append(ordered[pos - 1])
+        if pos < len(ordered):
+            neighbors.append(ordered[pos])
+        return all(matrix[idx, nb] >= threshold for nb in neighbors)
+
+    for _, i, j in candidate_edges(matrix, threshold):
+        gi, gj = membership.get(i), membership.get(j)
+        if gi is None and gj is None:
+            membership[i] = membership[j] = len(groups)
+            groups.append([i, j])
+        elif gi is None:
+            if chain_verifies(i, groups[gj]):
+                groups[gj].append(i)
+                membership[i] = gj
+        elif gj is None:
+            if chain_verifies(j, groups[gi]):
+                groups[gi].append(j)
+                membership[j] = gi
+        elif gi != gj:
+            if all(_fraction_verifier(matrix, threshold, merge_fraction, groups[gj])(a)
+                   for a in groups[gi]):
                 groups[gi].extend(groups[gj])
                 for m in groups[gj]:
                     membership[m] = gi
@@ -258,6 +350,7 @@ def cluster_single_link(matrix: np.ndarray, threshold: float) -> list[list[int]]
 POLICIES = {
     "verify_all": cluster_verify_all,
     "single_link": cluster_single_link,
+    "chain": cluster_verify_chain,  # needs luminance — callers pass it via partial/kwargs
 }
 
 
@@ -353,8 +446,13 @@ def main():
         print(f"timing: features {t_feat:.1f}s, pairwise matching {t_match:.1f}s")
 
     t0 = time.time()
-    clusters = POLICIES[args.policy](matrix, args.threshold) if args.policy != "verify_all" \
-        else cluster_verify_all(matrix, args.threshold, args.fraction)
+    if args.policy == "verify_all":
+        clusters = cluster_verify_all(matrix, args.threshold, args.fraction)
+    elif args.policy == "chain":
+        lum = load_or_compute_luminance(args.images, names)
+        clusters = cluster_verify_chain(matrix, args.threshold, lum, args.fraction)
+    else:
+        clusters = POLICIES[args.policy](matrix, args.threshold)
     groups = [[names[i] for i in cluster] for cluster in clusters]
     write_predictions(groups, args.out)
     print(f"clustering ({args.policy}, T={args.threshold:g}, f={args.fraction:g}): "

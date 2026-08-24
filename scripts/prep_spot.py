@@ -38,6 +38,10 @@ def main():
     parser.add_argument("--target", type=int, default=900)
     parser.add_argument("--min-large", type=int, default=8)
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--exclude-manifest", default=None,
+                        help="CSV whose group_ids are excluded (e.g. the spot manifest)")
+    parser.add_argument("--all-groups", action="store_true",
+                        help="select every remaining group (ignore target/min-large sampling)")
     args = parser.parse_args()
 
     src_dir, out_dir = Path(args.src_dir), Path(args.out_dir)
@@ -49,17 +53,27 @@ def main():
         for row in csv.DictReader(f):
             groups[row["group_id"]].append(row["filename"])
 
-    large = sorted([g for g, fs in groups.items() if len(fs) >= args.min_large])
-    small = [g for g, fs in groups.items() if len(fs) < args.min_large]
-    random.Random(args.seed).shuffle(small)
+    if args.exclude_manifest:
+        with open(args.exclude_manifest) as f:
+            excluded = {row["group_id"] for row in csv.DictReader(f)}
+        groups = defaultdict(list, {g: fs for g, fs in groups.items() if g not in excluded})
+        print(f"excluded {len(excluded)} group_ids from {args.exclude_manifest}")
 
-    selected = list(large)
-    total = sum(len(groups[g]) for g in selected)
-    for g in small:
-        if total >= args.target:
-            break
-        selected.append(g)
-        total += len(groups[g])
+    if args.all_groups:
+        selected = sorted(groups)
+        large = [g for g in selected if len(groups[g]) >= args.min_large]
+    else:
+        large = sorted([g for g, fs in groups.items() if len(fs) >= args.min_large])
+        small = [g for g, fs in groups.items() if len(fs) < args.min_large]
+        random.Random(args.seed).shuffle(small)
+
+        selected = list(large)
+        total = sum(len(groups[g]) for g in selected)
+        for g in small:
+            if total >= args.target:
+                break
+            selected.append(g)
+            total += len(groups[g])
 
     rows = []
     for i, g in enumerate(selected, 1):

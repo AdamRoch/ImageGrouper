@@ -41,6 +41,10 @@ def main():
     if matrix is None:
         sys.exit(f"no cache found for variant {args.variant!r} — build it first")
 
+    luminance = None
+    if args.policy == "chain":
+        luminance = grouper.load_or_compute_luminance(args.images, names)
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -49,7 +53,9 @@ def main():
     print(f"variant={args.variant or 'raw'}  policy={args.policy}  f={args.fraction:g}  ({len(names)} images)")
     print(f"{'T':>8} {'score':>7} {'exact':>10} {'pred_groups':>11} {'false_merge':>11} {'false_split':>11}")
     for t in [float(x) for x in args.thresholds.split(",")]:
-        if args.policy == "verify_all" and args.fraction != 1.0:
+        if args.policy == "chain":
+            clusters = grouper.cluster_verify_chain(matrix, t, luminance, args.fraction)
+        elif args.policy == "verify_all" and args.fraction != 1.0:
             clusters = grouper.cluster_verify_all(matrix, t, args.fraction)
         else:
             clusters = grouper.POLICIES[args.policy](matrix, t)

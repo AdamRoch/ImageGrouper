@@ -175,3 +175,21 @@ unverifiable number — do not chase it at the cost of overfitting.)
   (2) exposure-bridge matching (dark→mid→bright chains instead of requiring
   dark↔bright pairs); (3) LightGlue matcher variant (ALIKED/DISK, not SuperPoint);
   (4) large-group-aware clustering.
+
+## Holdout baseline + exposure-bridge result (2026-08-24)
+
+`data/medium5000/holdout/` = 1,224 untouched medium images, 345 groups, test-conditioned
+(**zero groups n≥8** — spot took them all; the holdout validates bracket handling, not
+large-group assembly). Sealed-exam reference: current config (gamma + norm_sqrt + f=0.75
+@ T=0.018) → **0.7449 (257/345), 38 merges / 50 splits**. The three evaluations cluster
+tightly (sample 0.7391 / spot 0.7513 / holdout 0.7449): the config generalizes, no
+tuning-set overfit. Residual error mass on the holdout: **n=5 brackets are the dominant
+failure** (62.2% exact vs 84.0% for n=3); n=3s next. Attack 5-bracket splits next
+(e.g. asymmetric small-group thresholds, higher-res re-verify), not the large-group tail.
+
+Exposure-bridge lever (`POLICIES["chain"]`, luminance-adjacent join rule): **FAILED the
+workshop gate** — tied sample at best (0.7391 @ T=0.04, above the config's T), lost spot,
+merge-exploded at low T. Root cause: the binding constraint is the entry fee (truly
+failed pairs have NO strong links to bridge with), not the join rule; brightness-adjacent
+relaxation admits look-alike same-room images. Negative result recorded; holdout
+confirmation not run (gate not met), holdout stays sealed.
