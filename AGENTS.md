@@ -2,18 +2,21 @@
 
 ## Project status
 
-The docs in this repo (`README.md`, `project-brief.md`, `SUBMISSION_GUIDE.md`, `SCORING.md`)
-describe a cash-prize competition. **That competition is over — there is no prize.** This is
-now a hiring/interview project for the repo owner. Treat all prize/leaderboard framing in
-those files as outdated.
+This repo started from AutoHDR's public challenge starter kit. The competition is over —
+no prize — and the original challenge docs (`project-brief.md`, `SUBMISSION_GUIDE.md`,
+`submission.yaml`) were removed 2026-08-23 for being outdated. This is a hiring/interview
+project for the repo owner.
 
-Believed still true (unconfirmed — verify before relying on):
+Submission channel: **dead** (verified 2026-08-23). codabench.org/competitions/15365
+404s, bounty.autohdr.com is gone, Codabench signup confirmation emails never arrive, and
+an external contestant confirms no access. No private-test grading exists unless the
+hiring partner provides a channel. Local evaluation via `evaluate.py` + labeled packages
+is the only score that exists.
 
-- Evaluation still runs through the same container contract + Codabench submission flow.
-- ~3 test submissions per day against their private test set.
-- Container constraints: no internet, CPU-only (`cpu-large` 8 vCPU/16 GB, `cpu-xlarge`
-  16 vCPU/32 GB). Timeout docs conflict: `README.md` says 60 min, `SUBMISSION_GUIDE.md`
-  says 30/45 min — design for the conservative number.
+Container contract (still honored — it's the artifact spec): no internet, CPU-only
+(`cpu-large` 8 vCPU/16 GB, `cpu-xlarge` 16 vCPU/32 GB), ~30–45 min timeout. Built image
+verified end-to-end: `adamm13/autohdr-solution:v1` (public on Docker Hub) reproduces the
+local score group-for-group (0.7391 on the sample test-sim).
 
 ## Scoring
 
@@ -61,17 +64,15 @@ Eval harness (to build):
 
 Workflow:
 
-- Heavy local iteration against the sample-500 (spot-check medium-5,000 to avoid
-  overfitting); submissions spent strategically — cadence is the owner's call.
-- One early unmodified-starter submission to de-risk Docker/Codabench logistics.
+- Heavy local iteration: tune on sample-500 + medium spot subset; confirm on the holdout
+  before believing any number (see "Accuracy push" below).
 - Docker builds on this Mac require `--platform linux/amd64`; the image must be public
-  on Docker Hub.
+  on Docker Hub (verified working: `adamm13/autohdr-solution:v1`).
 
 ## Open questions
 
-- Demo deployment: public AWS (App Runner = simple lean; ECS/ALB = more standard talking
-  points) vs local-only during interviews — undecided.
-- Whether the 3/day submission limit and Codabench flow still operate post-competition.
+- Demo deployment: decided — public, AWS App Runner at a subdomain of adamroch.com
+  (same image, server entrypoint). Not yet built.
 
 ## Backlog (stretch only)
 
@@ -158,3 +159,19 @@ large-group tail). Spot subset `data/medium5000/spot/` via `scripts/prep_spot.py
 serves > ~1,000 images per run, the shortlist pre-filter escape hatch is REQUIRED before
 submission. Build it before the first submission unless test-set size is confirmed small.
 
+
+## Accuracy push plan (2026-08-24)
+
+Goal: maximize the honest local score. (An external "98%" claim was a local,
+unverifiable number — do not chase it at the cost of overfitting.)
+
+- **Holdout discipline**: the medium package has 1,224 labeled images never used in
+  tuning (2,126 − 902 spot). Build a test-condition holdout from them. Tune on
+  sample + spot; confirm on the holdout before accepting any change. More validation
+  data can be minted from the 276K-image bucket (self-labeling `g<N>_` prefixes).
+- **Error mass to attack** (measured): large-group splits (n≥12), then n=5 bracket
+  splits; merges are small look-alike rooms.
+- **Lever queue**: (1) door-check residual after alignment (designed, unimplemented);
+  (2) exposure-bridge matching (dark→mid→bright chains instead of requiring
+  dark↔bright pairs); (3) LightGlue matcher variant (ALIKED/DISK, not SuperPoint);
+  (4) large-group-aware clustering.
