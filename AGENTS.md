@@ -291,3 +291,23 @@ robust alternative: 0.8116/0.8290/0.8841). Residual error (9 merges / 30 splits)
 dominated by deep orphans unrecoverable at affordable impostor cost with this matcher
 — the pipeline has converged; ~0.89 is the honest ceiling. Holdout stays sealed after
 the lever-B confirmation.
+
+## Fused-stack orphan rescue — PASSED (2026-08-24)
+
+Lever F (`scripts/fuse_rescue.py`): fuse each confident ≥2-member group into one
+exposure composite (`cv2.MergeMertens`; `AlignMTB` segfaults in opencv-headless 5.0.0 —
+fusion runs unaligned, justified: same-viewpoint brackets have pixel-level jitter only);
+orphans (non-assigned images) match against composites (norm_sqrt score + histeq
+equalization for big luminance gaps); a composite match only NOMINATES — the join
+requires the cheirality guard (<0.5) against a real member. Separability: true vs wrong
+nomination medians 5–9× apart, AUC 0.82–0.99.
+
+Workshop: 0.8551 → 0.8696 (sample), 0.8187 → 0.8446 (spot), merges flat. Holdout
+confirmation (pre-registered): **0.8870 → 0.8957** (+3 exact; splits 30 → 20, merges
+9 → 16 — merge count worsened on the holdout even though flat in workshop; net positive
+everywhere, conservative alternative T_fuse=0.025 nominates more safely).
+
+New final config: v2 pipeline + fuse-rescue stage @ T_fuse=0.022 → **0.8696 sample /
+0.8446 spot / 0.8957 holdout**. Score trajectory (holdout): 0.7449 → 0.8145 → 0.8870 →
+**0.8957**. Estimated container cost ≈ v2 × 1.1. The winning levers all changed the
+MEASUREMENT (gamma, histeq, cheirality, fusion); every rule-level lever lost.
