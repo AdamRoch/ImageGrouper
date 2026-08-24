@@ -265,6 +265,83 @@ def cluster_verify_all(matrix: np.ndarray, threshold: float, fraction: float = 1
     return result
 
 
+def cluster_verify_rescue(matrix: np.ndarray, threshold: float, luminance,
+                          fraction: float = 0.75,
+                          global_guard: bool = False) -> list[list[int]]:
+    """
+    verify_all (fraction join rule, unchanged merge discipline) PLUS an
+    exposure-extreme rescue path, designed from the n=5 failure diagnosis:
+    the dominant split pattern is a bracket's extreme-exposure member
+    (usually the brightest) that verifies only against its 1-2 adjacent
+    neighbors and so fails the ceil(f*m) join check.
+
+    Rescue rule: an unassigned candidate whose raw luminance lies STRICTLY
+    OUTSIDE the group's current luminance range (it extends the exposure
+    chain at an end) may join a >= 2-member group when
+      (a) the geometric entry fee holds against the exposure-adjacent end
+          member (score >= threshold), and
+      (b) coherence: that adjacent end member is the candidate's STRONGEST
+          link into the group (ties allowed), and
+      (c) with global_guard=True: the adjacent link also beats the
+          candidate's best link to ANY non-member (belongs-here-most test).
+    Interior candidates (luminance inside the range) get no rescue — they
+    must pass the normal fraction rule. Merges use the fraction rule only.
+    """
+    luminance = np.asarray(luminance, dtype=np.float64)
+    n = matrix.shape[0]
+    groups: list[list[int] | None] = []
+    membership: dict[int, int] = {}
+
+    def joinable(idx, members):
+        return _fraction_verifier(matrix, threshold, fraction, members)(idx)
+
+    def rescuable(idx, members):
+        if len(members) < 2:
+            return False
+        li = luminance[idx]
+        lums = luminance[members]
+        if lums.min() <= li <= lums.max():
+            return False  # interior — normal rule applies
+        nb = members[int(np.argmin(lums))] if li < lums.min() \
+            else members[int(np.argmax(lums))]
+        if matrix[idx, nb] < threshold:
+            return False
+        if not all(matrix[idx, m] <= matrix[idx, nb] for m in members):
+            return False
+        if global_guard:
+            member_set = set(members) | {idx}
+            best_outside = max((matrix[idx, w] for w in range(n) if w not in member_set),
+                               default=0.0)
+            if matrix[idx, nb] < best_outside:
+                return False
+        return True
+
+    for _, i, j in candidate_edges(matrix, threshold):
+        gi, gj = membership.get(i), membership.get(j)
+        if gi is None and gj is None:
+            membership[i] = membership[j] = len(groups)
+            groups.append([i, j])
+        elif gi is None:
+            if joinable(i, groups[gj]) or rescuable(i, groups[gj]):
+                groups[gj].append(i)
+                membership[i] = gj
+        elif gj is None:
+            if joinable(j, groups[gi]) or rescuable(j, groups[gi]):
+                groups[gi].append(j)
+                membership[j] = gi
+        elif gi != gj:
+            if all(joinable(a, groups[gj]) for a in groups[gi]):
+                groups[gi].extend(groups[gj])
+                for m in groups[gj]:
+                    membership[m] = gi
+                groups[gj] = None
+
+    result = [g for g in groups if g]
+    assigned = set(membership)
+    result.extend([[i] for i in range(n) if i not in assigned])
+    return result
+
+
 def cluster_verify_chain(matrix: np.ndarray, threshold: float, luminance,
                          merge_fraction: float = 0.75) -> list[list[int]]:
     """
@@ -350,7 +427,10 @@ def cluster_single_link(matrix: np.ndarray, threshold: float) -> list[list[int]]
 POLICIES = {
     "verify_all": cluster_verify_all,
     "single_link": cluster_single_link,
-    "chain": cluster_verify_chain,  # needs luminance — callers pass it via partial/kwargs
+    "chain": cluster_verify_chain,    # needs luminance — callers pass it via partial/kwargs
+    "rescue": cluster_verify_rescue,  # needs luminance too
+    "rescue_guarded": lambda matrix, threshold, luminance, fraction=0.75:
+        cluster_verify_rescue(matrix, threshold, luminance, fraction, global_guard=True),
 }
 
 
@@ -448,9 +528,9 @@ def main():
     t0 = time.time()
     if args.policy == "verify_all":
         clusters = cluster_verify_all(matrix, args.threshold, args.fraction)
-    elif args.policy == "chain":
+    elif args.policy in ("chain", "rescue"):
         lum = load_or_compute_luminance(args.images, names)
-        clusters = cluster_verify_chain(matrix, args.threshold, lum, args.fraction)
+        clusters = POLICIES[args.policy](matrix, args.threshold, lum, args.fraction)
     else:
         clusters = POLICIES[args.policy](matrix, args.threshold)
     groups = [[names[i] for i in cluster] for cluster in clusters]

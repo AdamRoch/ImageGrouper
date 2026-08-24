@@ -193,3 +193,27 @@ merge-exploded at low T. Root cause: the binding constraint is the entry fee (tr
 failed pairs have NO strong links to bridge with), not the join rule; brightness-adjacent
 relaxation admits look-alike same-room images. Negative result recorded; holdout
 confirmation not run (gate not met), holdout stays sealed.
+
+## 5-bracket diagnosis + rescue levers (2026-08-24)
+
+Diagnosis (`scripts/diagnose_n5.py`, cached matrices): ~100% of n=5 failure mass is
+**exposure-extreme orphans** — almost always the BRIGHTEST member, with links at
+0.5–0.9×T to its own group (passing 1–2 adjacent neighbors, failing the 75% join).
+Failing groups have much wider exposure ranges (median luminance range ~217–232 vs
+~165–169 passing). No two-cluster or global-depression cases.
+
+Rescue levers (`POLICIES["rescue"]` / `["rescue_guarded"]` — exterior-luminance join
+paths): **both FAILED the workshop gate.** Unguarded fixes real orphans but
+merge-explodes on spot (9→18 merges). Guarded blocks true orphans too — a bright
+extreme member often matches some OTHER bright image better than its own darker
+neighbor. **The orphans' links are not separable from cross-group links on this score
+matrix: clustering-rule surgery is exhausted; the problem is score-level.**
+
+Next levers (score-level, test-valid — remember test images are 1024px max, so any
+"re-verify at 2048px" idea is INVALID for the real artifact):
+1. Pair-directed exposure equalization (extra-gamma the darker side when matching
+   across big exposure gaps).
+2. Borderline-pair re-verify with relaxed SIFT params (lower contrast threshold →
+   more keypoints in low-contrast regions) at the same 1024px.
+3. LightGlue matcher variant (the remaining planned matcher lever).
+If none move the holdout: ~0.74–0.75 is this pipeline's honest ceiling — report as such.
