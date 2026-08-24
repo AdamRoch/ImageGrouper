@@ -217,3 +217,27 @@ Next levers (score-level, test-valid — remember test images are 1024px max, so
    more keypoints in low-contrast regions) at the same 1024px.
 3. LightGlue matcher variant (the remaining planned matcher lever).
 If none move the holdout: ~0.74–0.75 is this pipeline's honest ceiling — report as such.
+
+## Score-level round: pair-directed equalization — BREAKTHROUGH (2026-08-24)
+
+Lever 1 (`scripts/reverify_band.py`, band = 0.3–1.2×T pairs with raw-luminance gap ≥1.3,
+histogram-match the darker side onto the brighter side's tonal distribution, re-detect
++ re-match, max-upgrade semantics): **PASSED all gates.** Separability is the target
+signature — true orphan links ≥T: 22.7% → 81.6% (sample), 23.3% → 75.9% (spot),
+27.4% → 96.8% (holdout); impostors flat-to-down. AUC 0.72 → 0.95 / 0.69 → 0.92 /
+0.73 → 0.98.
+
+Workshop: 0.7391 → **0.8116** (sample), 0.7513 → **0.7927** (spot) @ T=0.022.
+Holdout confirmation (one run, pre-registered T=0.022): **0.7449 → 0.8145**
+(+24 exact groups; merges 38 → 32 AND splits 50 → 32 simultaneously). n=5 brackets
+62.2% → 74.8% exact — fixed the failure class it targeted. (Secondary, NOT
+pre-registered: T=0.025 scored 0.8290 on holdout but spot prefers 0.022 — 0.022 stands.)
+
+Lever 2 (relaxed SIFT): FAILED — absolute scores fall (norm_sqrt denominator inflates);
+dominated by lever 1. LightGlue: parked — classical CV delivered; poor next-dollar
+allocation vs integration risk.
+
+**Container-capacity impact**: re-verify adds ~40–60% on top of base matching →
+capacity ~550–700 images per 45-min cpu-xlarge run (was ~900–1,100). Shortlist
+pre-filter becomes REQUIRED above that batch size if this config is wired into
+`solution.py`.
