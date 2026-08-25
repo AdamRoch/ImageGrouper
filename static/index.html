@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoHDR — Image Grouping Demo</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font: 15px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+         background: #f6f7f9; color: #1c1e21; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; }
+  .sub { color: #5f6368; margin: 6px 0 24px; font-size: 14px; }
+  #drop { border: 2px dashed #b9bec7; border-radius: 14px; background: #fff;
+          padding: 44px 24px; text-align: center; cursor: pointer;
+          transition: border-color .15s, background .15s; }
+  #drop.over { border-color: #2563eb; background: #eff4ff; }
+  #drop p.big { font-size: 16px; font-weight: 600; }
+  #drop p.small { color: #8a8f98; font-size: 13px; margin-top: 6px; }
+  #filelist { margin: 14px 0 0; font-size: 13px; color: #5f6368; }
+  button { background: #2563eb; color: #fff; border: 0; border-radius: 9px;
+           padding: 10px 22px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:disabled { background: #a8b6d6; cursor: default; }
+  #runrow { margin-top: 18px; display: flex; align-items: center; gap: 16px; }
+  #status { font-size: 14px; color: #3c4043; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #c7ccd4;
+             border-top-color: #2563eb; border-radius: 50%;
+             animation: spin 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #results { margin-top: 36px; }
+  .cluster { background: #fff; border: 1px solid #e3e6ea; border-radius: 14px;
+             padding: 16px 18px; margin-bottom: 16px; }
+  .cluster h2 { font-size: 14px; font-weight: 650; color: #1c1e21; margin-bottom: 10px; }
+  .cluster h2 span { color: #8a8f98; font-weight: 500; }
+  .thumbs { display: flex; flex-wrap: wrap; gap: 10px; }
+  .thumbs img { width: 150px; height: 100px; object-fit: cover; border-radius: 8px;
+                border: 1px solid #e3e6ea; background: #eee; }
+  .thumbs figure { margin: 0; }
+  .thumbs figcaption { font-size: 10px; color: #9aa0a8; margin-top: 3px; max-width: 150px;
+                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #empty { color: #8a8f98; font-size: 14px; margin-top: 8px; }
+  .err { color: #b3261e; font-size: 14px; margin-top: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>AutoHDR — same-angle image grouping</h1>
+  <p class="sub">Drop a photoshoot's images (JPG/PNG, up to 100). The server groups
+    photos that share a camera angle — e.g. HDR exposure brackets.</p>
+
+  <div id="drop">
+    <p class="big">Drag &amp; drop images here</p>
+    <p class="small">or click to choose files — max 100 images, 8&nbsp;MB each</p>
+    <input id="picker" type="file" accept=".jpg,.jpeg,.png" multiple hidden>
+  </div>
+  <div id="filelist"></div>
+
+  <div id="runrow">
+    <button id="go" disabled>Group images</button>
+    <span id="status"></span>
+  </div>
+  <div id="err" class="err"></div>
+
+  <div id="results"></div>
+</div>
+
+<script>
+const drop = document.getElementById('drop');
+const picker = document.getElementById('picker');
+const filelist = document.getElementById('filelist');
+const go = document.getElementById('go');
+const statusEl = document.getElementById('status');
+const errEl = document.getElementById('err');
+const resultsEl = document.getElementById('results');
+let files = [];
+
+drop.addEventListener('click', () => picker.click());
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => {
+  e.preventDefault(); drop.classList.remove('over');
+  setFiles([...e.dataTransfer.files]);
+});
+picker.addEventListener('change', () => setFiles([...picker.files]));
+
+function setFiles(f) {
+  files = f.filter(x => /\.(jpe?g|png)$/i.test(x.name)).slice(0, 100);
+  filelist.textContent = files.length
+    ? files.length + ' file(s) ready: ' +
+      files.slice(0, 5).map(x => x.name).join(', ') + (files.length > 5 ? ', …' : '')
+    : '';
+  go.disabled = files.length === 0;
+  errEl.textContent = '';
+  resultsEl.innerHTML = '';
+}
+
+go.addEventListener('click', async () => {
+  go.disabled = true; errEl.textContent = ''; resultsEl.innerHTML = '';
+  const fd = new FormData();
+  files.forEach(f => fd.append('files', f));
+  statusEl.innerHTML = '<span class="spinner"></span>uploading…';
+  try {
+    const r = await fetch('/api/group', { method: 'POST', body: fd });
+    if (r.status === 429) throw new Error('server is busy with another job — try again shortly');
+    if (!r.ok) throw new Error('upload failed: ' + (await r.json()).detail);
+    const { job_id } = await r.json();
+    poll(job_id);
+  } catch (e) {
+    statusEl.textContent = '';
+    errEl.textContent = e.message;
+    go.disabled = false;
+  }
+});
+
+async function poll(jobId) {
+  for (;;) {
+    await new Promise(r => setTimeout(r, 2000));
+    const s = await (await fetch('/api/status/' + jobId)).json();
+    statusEl.innerHTML = '<span class="spinner"></span>' + s.progress;
+    if (s.state === 'done') { showResults(jobId); return; }
+    if (s.state === 'error') {
+      statusEl.textContent = '';
+      errEl.textContent = 'job failed: ' + s.progress;
+      go.disabled = false;
+      return;
+    }
+  }
+}
+
+async function showResults(jobId) {
+  const r = await (await fetch('/api/results/' + jobId)).json();
+  const groups = r.groups;
+  const multi = groups.filter(g => g.length > 1);
+  statusEl.textContent = `done — ${groups.length} groups ` +
+    `(${multi.length} with 2+ images)`;
+  go.disabled = false;
+  resultsEl.innerHTML = groups.map((g, i) => `
+    <div class="cluster">
+      <h2>Group ${i + 1} <span>— ${g.length} image${g.length > 1 ? 's' : ''}</span></h2>
+      <div class="thumbs">
+        ${g.map(m => `<figure><img src="${m.url}" loading="lazy" alt="${m.name}">
+          <figcaption>${m.name}</figcaption></figure>`).join('')}
+      </div>
+    </div>`).join('') || '<p id="empty">no groups returned</p>';
+}
+</script>
+</body>
+</html>

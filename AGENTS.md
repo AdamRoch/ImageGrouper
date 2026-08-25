@@ -334,3 +334,40 @@ inside the emulated Docker VM (v1 and v2 dress rehearsals each reproduced their 
 scores group-for-group; v3's local run already exercises the identical code path).
 Capacity estimate on cpu-xlarge: ~500–650 images per 45-min run (match + reverify +
 guard dominate) — the shortlist pre-filter remains the open escape hatch above that.
+
+## v3 emulated rehearsal + demo + deploy scaffolding (2026-08-25)
+
+**(A) v3 in the emulated Docker VM** (`output/docker_rehearsal_v3/`): **0.8696 (60/69,
+1 merge / 8 splits), 78/78 groups identical** to the local container-path rehearsal —
+zero outcome drift (guard candidates 4,027 vs 4,033 locally and blocked edges 1,670 vs
+1,683 differ at the margin from platform float noise, below every decision threshold).
+Runtime 36.9 min emulated (6-core Rosetta VM): features 16s, matching 743s, reverify
+1,172s, guard 213s, fuse ~67s.
+
+**(B) Demo server, NEW tag `:v4`** (`:v3` stays frozen as the validated submission
+artifact). `server.py` (FastAPI): `POST /api/group` multipart JPG/PNG (≤100 files,
+≤8 MB each, 415/413 guard rails), one job at a time (429 when busy), in-memory
+registry, artifacts under `/tmp/autohdr_jobs` with 30-min TTL sweeper, status/results/
+image-serving endpoints, `/health`; job runner mirrors `group_images(**solution.CONFIG)`
+stage-by-stage with progress notes (same grouper functions, same v3 parameters — no
+fork, threads only). `static/index.html`: drag-drop upload → poll → labeled thumbnail
+clusters, fully inline (no CDNs — container needs no internet). Dockerfile adds
+`fastapi==0.141.1`, `uvicorn==0.52.4`, `python-multipart==0.0.32`
+and copies `server.py` + `static/`; **default CMD is unchanged** (`python solution.py`,
+the submission contract); server start documented as
+`uvicorn server:app --host 0.0.0.0 --port 8080`. Local smoke test (uvicorn, 8 images
+from test_sim = two 3-shot brackets + 2 singletons): health ✓, upload → status →
+results flow returns exactly the two brackets + 2 singletons ✓, 415 on .txt ✓,
+429 on concurrent job ✓, image serving ✓. `adamm13/autohdr-solution:v4` built
+(linux/amd64), pushed, verified public; v1–v3 intact.
+
+**(C) `deploy/` scaffolding — files only, no AWS resources created.** App Runner pulls
+from ECR (not Docker Hub): `deploy/deploy.sh` (parameterized REGION/SERVICE_NAME/
+IMAGE_TAG, idempotent — ECR repo, `AppRunnerECRAccessRole`, min-1/max-1 auto-scaling
+config, create-or-update service via `--cli-input-json`, prints the service URL);
+`deploy/apprunner-service.json` (2 vCPU / 4 GB preset, port 8080, uvicorn start
+command, HTTP health check on `/health`); `deploy/README.md` (prereqs, custom
+subdomain via `associate-custom-domain` + CNAME validation records with Route53 vs
+external-DNS notes, subdomain left as a placeholder, cost honesty — ~$10–25/month
+running, ~$2–5 provisioned idle, **pause-service between demos is the right default**,
+teardown steps). `aws` CLI is NOT installed on this machine, so nothing was executed.

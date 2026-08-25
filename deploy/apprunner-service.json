@@ -1,0 +1,34 @@
+{
+  "ServiceName": "__SERVICE_NAME__",
+  "SourceConfiguration": {
+    "ImageRepository": {
+      "ImageIdentifier": "__IMAGE_URI__",
+      "ImageRepositoryType": "ECR",
+      "ImageConfiguration": {
+        "Port": "8080",
+        "StartCommand": "uvicorn server:app --host 0.0.0.0 --port 8080",
+        "RuntimeEnvironmentVariables": {}
+      }
+    },
+    "AuthenticationConfiguration": {
+      "AccessRoleArn": "__ROLE_ARN__"
+    },
+    "AutoDeploymentsEnabled": false
+  },
+  "InstanceConfiguration": {
+    "Cpu": "2048",
+    "Memory": "4096"
+  },
+  "HealthCheckConfiguration": {
+    "Protocol": "HTTP",
+    "Path": "/health",
+    "Interval": 10,
+    "Timeout": 5,
+    "HealthyThreshold": 1,
+    "UnhealthyThreshold": 5
+  },
+  "AutoScalingConfigurationArn": "__ASG_ARN__",
+  "Tags": [
+    {"Key": "project", "Value": "autohdr-demo"}
+  ]
+}
