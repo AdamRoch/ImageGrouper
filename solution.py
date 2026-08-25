@@ -6,16 +6,17 @@ Reads test images from /input/images/ and writes predictions.csv to /output/.
 Algorithm (validated config, see grouper.py):
   SIFT on gamma-normalized grayscale (per-image median luminance -> 128),
   all-pairs knnMatch + Lowe ratio test + RANSAC homography inliers, score
-  normalized by sqrt(kp_i * kp_j), then a pair-directed exposure
+  normalized by sqrt(kp_i * kp_j); then a pair-directed exposure
   equalization re-verify pass (borderline band 0.3-1.2 x 0.018 with raw
   luminance gap >= 1.3: histogram-match the darker image onto the brighter
-  one's tonal distribution, re-detect, max-upgrade the pair score), then
-  verify-then-merge clustering where a candidate joins a group if it
-  verifies (score >= T) against >= 75% of the group's current members
-  (T = 0.022).
+  one's tonal distribution, re-detect, max-upgrade the pair score); then a
+  camera-translation guard (candidate edges re-matched + pose-decomposed,
+  cheirality ratio >= 0.5 -> edge blocked); verify-then-merge clustering
+  (candidate joins if it verifies, score >= T, against >= 75% of members,
+  T = 0.025); finally a fused-stack orphan rescue (MergeMertens composites
+  nominate, cheirality guard gates, T_fuse = 0.022).
 
-Local scores: 0.8116 on sample-500 test sim, 0.7927 on medium spot-check,
-0.8145 on the medium holdout.
+Local scores: 0.8696 sample-500 test sim / 0.8446 medium spot / 0.8957 holdout.
 
 Contract:
     Input:  /input/images/  — JPEG images from a single photoshoot (read-only)
@@ -39,9 +40,9 @@ INPUT_DIR = Path("/input/images")
 OUTPUT_DIR = Path("/output")
 SUPPORTED = {".jpg", ".jpeg", ".png"}
 
-# Validated on sample-500 (0.8116), medium spot-check (0.7927), holdout (0.8145)
+# v3 config: 0.8696 sample / 0.8446 spot / 0.8957 holdout (validated)
 CONFIG = dict(preprocess="gamma", normalize="norm_sqrt", reverify="histeq",
-              fraction=0.75, threshold=0.022)
+              guard="cheirality", fuse_threshold=0.022, fraction=0.75, threshold=0.025)
 
 
 def group_images(image_paths: list[str]) -> list[list[str]]:

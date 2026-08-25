@@ -14,9 +14,9 @@ hiring partner provides a channel. Local evaluation via `evaluate.py` + labeled 
 is the only score that exists.
 
 Container contract (still honored — it's the artifact spec): no internet, CPU-only
-(`cpu-large` 8 vCPU/16 GB, `cpu-xlarge` 16 vCPU/32 GB), ~30–45 min timeout. Built image
-verified end-to-end: `adamm13/autohdr-solution:v1` (public on Docker Hub) reproduces the
-local score group-for-group (0.7391 on the sample test-sim).
+(`cpu-large` 8 vCPU/16 GB, `cpu-xlarge` 16 vCPU/32 GB), ~30–45 min timeout. Latest image
+`adamm13/autohdr-solution:v3` (public on Docker Hub); the container code path reproduces
+the validated local score group-for-group (0.8696 on the sample test-sim).
 
 ## Scoring
 
@@ -311,3 +311,26 @@ New final config: v2 pipeline + fuse-rescue stage @ T_fuse=0.022 → **0.8696 sa
 0.8446 spot / 0.8957 holdout**. Score trajectory (holdout): 0.7449 → 0.8145 → 0.8870 →
 **0.8957**. Estimated container cost ≈ v2 × 1.1. The winning levers all changed the
 MEASUREMENT (gamma, histeq, cheirality, fusion); every rule-level lever lost.
+
+## v3 container wiring (2026-08-25)
+
+Cheirality guard and fuse-rescue moved from experiment scripts into `grouper.py` as
+first-class stages: `guard_pair_metrics` / `compute_guard_metrics` (guard measurements
+cached at `.grouper_cache/guards_<key>_s<min_score>.npz`) / `apply_cheirality_guard` /
+`fuse_composites` / `fuse_rescue`; `group_images()` gained `guard` and `fuse_threshold`
+params. `solution.py` CONFIG is now v3: gamma + norm_sqrt + histeq re-verify +
+cheirality guard + fuse-rescue, f=0.75, T=0.025, T_fuse=0.022. `scripts/merge_guards.py`
+and `scripts/fuse_rescue.py` remain the experiment harnesses.
+
+Local rehearsal of the exact container code path on `data/sample500/test_sim`:
+**0.8696 (60/69, 1 merge)** — group-for-group identical to the workshop fuse-apply
+predictions (78/78 groups, zero drift). Stage timings locally: features 9s, matching
+537s, reverify 633s, guard 126s (4,033 candidates, 1,683 blocked), fuse ~52s
+(7 nominations → 4 joins); total ~23 min.
+
+Docker: `adamm13/autohdr-solution:v3` built (`--platform linux/amd64`), pushed, verified
+public (manifest inspect + Hub API); v1/v2 tags intact. v3 was NOT additionally run
+inside the emulated Docker VM (v1 and v2 dress rehearsals each reproduced their local
+scores group-for-group; v3's local run already exercises the identical code path).
+Capacity estimate on cpu-xlarge: ~500–650 images per 45-min run (match + reverify +
+guard dominate) — the shortlist pre-filter remains the open escape hatch above that.

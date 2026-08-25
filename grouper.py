@@ -48,6 +48,8 @@ DEFAULT_THRESHOLD = 40    # inlier count separating "same angle" from "different
 # clustering threshold (0.022) so the band reproduces the validated runs.
 BAND_REF_T = 0.018
 REVERIFY_MIN_GAP = 1.3    # min raw-luminance ratio for a pair to be re-verified
+RESID_NOISE = 25          # residual-map gray level counted as "above JPEG noise"
+CHEIRALITY_CUT = 0.5      # cheirality ratio above which an edge reads as camera translation
 
 CACHE_DIR = Path(".grouper_cache")
 
@@ -261,6 +263,256 @@ def reverify_histeq(matrix: np.ndarray, image_paths: list[str], luminance,
                       flush=True)
     print(f"  reverify: done in {time.time() - t0:.1f}s", flush=True)
     return upgraded
+
+
+# --- camera-translation guard ("cheirality" guard) ---
+#
+# Candidate edges (score >= T) are re-matched and pose-decomposed; an edge
+# whose matched points triangulate in front of both cameras (cheirality ratio
+# >= CHEIRALITY_CUT) reads as a repositioned camera and is blocked (zeroed).
+# Same-viewpoint brackets are rotation-dominant: their cheirality is ~0.
+# Validated: holdout merges 38 -> 9 with only 10/25,267 true edges blocked.
+
+def guard_pair_metrics(i, j, images, feats, luminance, bf, sift):
+    """
+    (blob_frac, ess_inlier_ratio, cheirality_ratio) for one pair, re-matched
+    with homography + essential-matrix pose. Pairs with raw-luminance gap
+    >= REVERIFY_MIN_GAP are re-matched on the histeq-adjusted darker side
+    (mirrors the reverify pass). NaN = no evidence (never blocks).
+    """
+    dark, bright = (i, j) if luminance[i] <= luminance[j] else (j, i)
+    lo, hi = luminance[dark], luminance[bright]
+    if hi / max(lo, 1e-6) >= REVERIFY_MIN_GAP:
+        pts_d, d_d = detect(sift, hist_match(images[dark], images[bright]))
+    else:
+        pts_d, d_d = feats[dark]
+    pts_b, d_b = feats[bright]
+
+    nan = (np.nan, np.nan, np.nan)
+    if len(d_d) < 2 or len(d_b) < 2:
+        return nan
+    good = []
+    for pair in bf.knnMatch(d_d, d_b, k=2):
+        if len(pair) == 2:
+            m, n_ = pair
+            if m.distance < RATIO_TEST * n_.distance:
+                good.append(m)
+    if len(good) < MIN_GOOD_MATCHES:
+        return nan
+    src = pts_d[[m.queryIdx for m in good]]
+    dst = pts_b[[m.trainIdx for m in good]]
+    H, mask = cv2.findHomography(src, dst, cv2.RANSAC, RANSAC_THRESH)
+    if H is None or mask is None or mask.sum() < MIN_GOOD_MATCHES:
+        return nan
+    inl = mask.ravel().astype(bool)
+    src_i, dst_i = src[inl], dst[inl]
+
+    img_d = images[dark]
+    warped = cv2.warpPerspective(images[bright], H, (img_d.shape[1], img_d.shape[0]))
+    diff = cv2.absdiff(img_d, hist_match(warped, img_d))  # tone safety
+    above = (diff > RESID_NOISE).astype(np.uint8)
+    ncomp, _, stats, _ = cv2.connectedComponentsWithStats(above, connectivity=8)
+    blob_frac = (stats[1:, cv2.CC_STAT_AREA].max() / diff.size) if ncomp > 1 else 0.0
+
+    h, w = img_d.shape
+    K = np.array([[max(w, h), 0, w / 2], [0, max(w, h), h / 2], [0, 0, 1]], dtype=np.float64)
+    E, mask_e = cv2.findEssentialMat(src_i, dst_i, K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
+    if E is None or mask_e is None:
+        return blob_frac, np.nan, np.nan
+    ess_ratio = float(mask_e.sum()) / len(src_i)
+    try:
+        _, _, _, mask_rp = cv2.recoverPose(E, src_i, dst_i, K, mask=mask_e)
+        cheir = float((mask_rp > 0).sum()) / len(src_i)
+    except cv2.error:
+        cheir = np.nan
+    return blob_frac, ess_ratio, cheir
+
+
+def guards_cache_path_for(images_dir: str, min_score: float) -> Path:
+    key = hashlib.md5(os.path.abspath(images_dir).encode()).hexdigest()[:12]
+    return CACHE_DIR / f"guards_{key}_s{min_score:g}.npz"
+
+
+def compute_guard_metrics(matrix: np.ndarray, image_paths: list[str], images, luminance,
+                          kps, descs, min_score: float, workers: int | None = None,
+                          images_dir: str | None = None):
+    """
+    Guard metrics (blob, cheirality) for every pair scoring >= min_score.
+    Returns (ii, jj, blob, cheir) index/value arrays. Caches to
+    .grouper_cache/ when images_dir is given (keyed like the score matrices).
+    """
+    n = len(image_paths)
+    names = [os.path.basename(p) for p in image_paths]
+    if images_dir is not None:
+        cache = guards_cache_path_for(images_dir, min_score)
+        if cache.exists():
+            d = np.load(cache)
+            if d["names"].tolist() == names:
+                print(f"  guard: loaded cached metrics from {cache}", flush=True)
+                return d["i"], d["j"], d["blob"], d["cheir"]
+
+    iu = np.triu_indices(n, 1)
+    sel = matrix[iu] >= min_score
+    pairs = list(zip(iu[0][sel].tolist(), iu[1][sel].tolist()))
+    print(f"  guard: {len(pairs):,} candidate pairs >= {min_score:g}", flush=True)
+    if not pairs:
+        empty = np.array([], dtype=np.int64)
+        return empty, empty, np.array([]), np.array([])
+
+    feats = list(zip(kps, descs))
+
+    def run_batch(batch):
+        bf = cv2.BFMatcher(cv2.NORM_L2)
+        sift = cv2.SIFT_create()
+        return [(i, j, *guard_pair_metrics(i, j, images, feats, luminance, bf, sift))
+                for i, j in batch]
+
+    batches = [pairs[k:k + 200] for k in range(0, len(pairs), 200)]
+    workers = workers or os.cpu_count() or 4
+    t0 = time.time()
+    done = 0
+    results = []
+    with ThreadPoolExecutor(workers) as pool:
+        for out in pool.map(run_batch, batches):
+            results.extend(out)
+            done += len(out)
+            if done % 2000 < 200 or done == len(pairs):
+                print(f"  guard: {done}/{len(pairs)} pairs ({time.time() - t0:.1f}s)", flush=True)
+
+    ii = np.array([r[0] for r in results], dtype=np.int64)
+    jj = np.array([r[1] for r in results], dtype=np.int64)
+    blob = np.array([r[2] for r in results], dtype=np.float32)
+    cheir = np.array([r[4] for r in results], dtype=np.float32)
+    if images_dir is not None:
+        np.savez(guards_cache_path_for(images_dir, min_score),
+                 names=np.array(names), i=ii, j=jj, blob=blob, cheir=cheir)
+    return ii, jj, blob, cheir
+
+
+def apply_cheirality_guard(matrix: np.ndarray, ii, jj, cheir,
+                           cut: float = CHEIRALITY_CUT) -> np.ndarray:
+    """Zero candidate edges whose cheirality ratio >= cut (camera moved)."""
+    guarded = matrix.copy()
+    ok = ~np.isnan(cheir)
+    for k in np.flatnonzero(ok & (cheir >= cut)):
+        guarded[ii[k], jj[k]] = guarded[jj[k], ii[k]] = 0.0
+    n_blocked = int((ok & (cheir >= cut)).sum())
+    print(f"  guard: blocked {n_blocked:,} candidate edges (cheirality >= {cut:g})", flush=True)
+    return guarded
+
+
+# --- fused-stack orphan rescue (post-clustering stage) ---
+#
+# Each confident (>= 2-member) group is fused into one exposure composite
+# (MergeMertens, UNALIGNED — AlignMTB segfaults in opencv-headless 5.0.0, and
+# same-viewpoint brackets carry ~px jitter). Orphans (singleton clusters)
+# match against composites; a composite score only NOMINATES — the join
+# requires the cheirality guard against a real member. Validated:
+# sample 0.8551 -> 0.8696, spot 0.8187 -> 0.8446, holdout 0.8870 -> 0.8957.
+
+def fuse_composites(groups: list[list[int]], images) -> tuple[list, list, list]:
+    """One unaligned MergeMertens composite per group + SIFT features + mean luminance."""
+    sift = cv2.SIFT_create()
+    composites, feats, lums = [], [], []
+    t0 = time.time()
+    for k, g in enumerate(groups, 1):
+        member_imgs = [images[m] for m in g]
+        # MergeMertens requires uniform dimensions: resize to the modal size
+        from collections import Counter
+        (w, h), _ = Counter((im.shape[1], im.shape[0]) for im in member_imgs).most_common(1)[0]
+        member_imgs = [im if (im.shape[1], im.shape[0]) == (w, h)
+                       else cv2.resize(im, (w, h), interpolation=cv2.INTER_AREA)
+                       for im in member_imgs]
+        fusion = cv2.createMergeMertens().process(member_imgs)
+        comp = (np.clip(fusion, 0, 1) * 255).astype(np.uint8)
+        composites.append(comp)
+        feats.append(detect(sift, comp))
+        lums.append(float(comp.mean()))
+        if k % 50 == 0 or k == len(groups):
+            print(f"  fuse: {k}/{len(groups)} composites ({time.time() - t0:.1f}s)", flush=True)
+    return composites, feats, lums
+
+
+def fuse_rescue(matrix: np.ndarray, clusters: list[list[int]], images, luminance,
+                kps, descs, t_fuse: float, workers: int | None = None) -> list[list[int]]:
+    """
+    Rescue stage: match each orphan (singleton cluster) against every fused
+    group composite; nominations with norm_sqrt score >= t_fuse join their
+    strongest group only if the cheirality guard (< CHEIRALITY_CUT) passes
+    against at least one of the group's 5 strongest-linked real members.
+    One join per orphan; nominations processed strongest-first.
+    """
+    groups = [c for c in clusters if len(c) >= 2]
+    orphans = [c[0] for c in clusters if len(c) == 1]
+    print(f"  fuse: {len(groups)} multi-member groups, {len(orphans)} orphans", flush=True)
+    if not groups or not orphans:
+        return clusters
+
+    composites, comp_feats, comp_lum = fuse_composites(groups, images)
+    feats = list(zip(kps, descs))
+    luminance = np.asarray(luminance, dtype=np.float64)
+
+    def pair_score(oi, gi, bf, sift):
+        pts_o, d_o = feats[oi]
+        pts_c, d_c = comp_feats[gi]
+        lo, hi = sorted((luminance[oi], comp_lum[gi]))
+        if hi / max(lo, 1e-6) >= REVERIFY_MIN_GAP:
+            if luminance[oi] < comp_lum[gi]:
+                pts_o, d_o = detect(sift, hist_match(images[oi], composites[gi]))
+            else:
+                pts_c, d_c = detect(sift, hist_match(composites[gi], images[oi]))
+        inl = match_features(pts_o, d_o, pts_c, d_c, bf)
+        return inl / float(np.sqrt(max(len(pts_o), 1) * max(len(pts_c), 1)))
+
+    work = [(oi, gi) for oi in orphans for gi in range(len(groups))]
+    batches = [work[k:k + 500] for k in range(0, len(work), 500)]
+    workers = workers or os.cpu_count() or 4
+
+    def run_batch(batch):
+        bf = cv2.BFMatcher(cv2.NORM_L2)
+        sift = cv2.SIFT_create()
+        return [(oi, gi, pair_score(oi, gi, bf, sift)) for oi, gi in batch]
+
+    t0 = time.time()
+    done = 0
+    results = {}
+    with ThreadPoolExecutor(workers) as pool:
+        for out in pool.map(run_batch, batches):
+            for oi, gi, sc in out:
+                results[(oi, gi)] = sc
+            done += len(out)
+            if done % 5000 < 500 or done == len(work):
+                print(f"  fuse: {done}/{len(work)} orphan x composite tests "
+                      f"({time.time() - t0:.1f}s)", flush=True)
+
+    nominations = sorted(((sc, oi, gi) for (oi, gi), sc in results.items() if sc >= t_fuse),
+                         reverse=True)
+    print(f"  fuse: {len(nominations)} nominations >= {t_fuse:g}", flush=True)
+
+    bf = cv2.BFMatcher(cv2.NORM_L2)
+    sift = cv2.SIFT_create()
+    joined = {}
+    for sc, oi, gi in nominations:
+        if oi in joined:
+            continue
+        members = sorted(groups[gi], key=lambda m: -matrix[oi, m])
+        for m in members[:5]:
+            _, _, cheir = guard_pair_metrics(oi, m, images, feats, luminance, bf, sift)
+            if not np.isnan(cheir) and cheir < CHEIRALITY_CUT:
+                joined[oi] = gi
+                break
+    print(f"  fuse: {len(joined)} orphans pass the cheirality guard", flush=True)
+
+    member_of = {}
+    for k, c in enumerate(clusters):
+        for m in c:
+            member_of[m] = k
+    new_clusters = [list(c) for c in clusters]
+    for oi, gi in joined.items():
+        target = member_of[groups[gi][0]]
+        new_clusters[member_of[oi]].remove(oi)
+        new_clusters[target].append(oi)
+    return [c for c in new_clusters if c]
 
 
 def cache_path_for(images_dir: str, tag: str = "") -> Path:
@@ -642,30 +894,47 @@ def group_images(image_paths: list[str], threshold: float = DEFAULT_THRESHOLD,
                  ratio: float = RATIO_TEST, policy: str = "verify_all",
                  preprocess: str = "none", normalize: str | None = None,
                  fraction: float = 1.0, workers: int | None = None,
-                 reverify: str | None = None) -> list[list[str]]:
+                 reverify: str | None = None, guard: str | None = None,
+                 fuse_threshold: float | None = None) -> list[list[str]]:
     """
     Group images by camera angle. Returns groups of basenames.
 
-    Defaults reproduce the raw baseline. The validated submission config:
+    Defaults reproduce the raw baseline. The validated v3 submission config:
     preprocess="gamma", normalize="norm_sqrt", reverify="histeq",
-    fraction=0.75, threshold=0.022.
+    guard="cheirality", fuse_threshold=0.022, fraction=0.75, threshold=0.025.
     """
     paths = [str(p) for p in image_paths]
     names, kps, descs = extract_features(paths, preprocess=preprocess)
     matrix = compute_score_matrix(kps, descs, ratio, workers)
     if normalize is not None:
         matrix = normalize_score_matrix(matrix, kps, normalize)
+    luminance = None
+    if reverify is not None or guard is not None or fuse_threshold is not None:
+        t0 = time.time()
+        luminance = np.array([load_gray(p).mean() for p in paths], dtype=np.float32)
+        print(f"  stages: luminance pass ({time.time() - t0:.1f}s)", flush=True)
     if reverify is not None:
         if reverify != "histeq":
             raise ValueError(f"unknown reverify mode {reverify!r}")
-        t0 = time.time()
-        luminance = np.array([load_gray(p).mean() for p in paths], dtype=np.float32)
-        print(f"  reverify: luminance pass ({time.time() - t0:.1f}s)", flush=True)
         matrix = reverify_histeq(matrix, paths, luminance, kps, descs, workers=workers)
+    if guard is not None or fuse_threshold is not None:
+        t0 = time.time()
+        images = [load_gray(p, preprocess=preprocess) for p in paths]
+        print(f"  stages: loaded {len(paths)} {preprocess} images ({time.time() - t0:.1f}s)",
+              flush=True)
+    if guard is not None:
+        if guard != "cheirality":
+            raise ValueError(f"unknown guard mode {guard!r}")
+        ii, jj, _, cheir = compute_guard_metrics(matrix, paths, images, luminance,
+                                                 kps, descs, threshold, workers)
+        matrix = apply_cheirality_guard(matrix, ii, jj, cheir)
     if policy == "verify_all":
         clusters = cluster_verify_all(matrix, threshold, fraction)
     else:
         clusters = POLICIES[policy](matrix, threshold)
+    if fuse_threshold is not None:
+        clusters = fuse_rescue(matrix, clusters, images, luminance, kps, descs,
+                               fuse_threshold, workers)
     return [[names[i] for i in cluster] for cluster in clusters]
 
 
