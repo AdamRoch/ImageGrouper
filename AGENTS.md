@@ -446,3 +446,17 @@ images per 45-min run (was ~500–650) — shortlist pre-filter threshold lowers
 Docker: `adamm13/autohdr-solution:v5` built (`--platform linux/amd64`), pushed,
 verified public two ways (manifest inspect + Hub API); v1–v4 intact. Server smoke test
 on the v5 config passed (8-image job: two brackets + 2 singletons, correct groups).
+
+## Submission-ready (2026-08-26)
+
+The submission artifact is **`adamm13/autohdr-solution:v5`** (public on Docker Hub) +
+this repo. Validated: 0.9275 sample / 0.8808 spot / 0.9159 sealed holdout; local and
+emulated container rehearsals both reproduce 0.9275 group-for-group. README.md was
+rewritten for external reviewers (v5 pipeline, scores with holdout-protocol
+provenance, exact `docker run` invocation, capacity honesty ~450–550 images per
+45-min cpu-xlarge run, demo + deploy/ notes). Contract edge-case audit passed: every
+input appears exactly once (zero-match images included, verified on a synthetic
+zero-keypoint case), read-only input never written to, no network calls in the
+container path. Historical challenge references remain only where they belong
+(`docs/project-context/` is an archived transcript of AutoHDR's own video; AGENTS.md
+is the decision log).

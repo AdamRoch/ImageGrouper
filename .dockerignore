@@ -1,4 +1,4 @@
-# Keep the image to solution.py + grouper.py + installed deps only
+# Keep the image to the runtime files + installed deps only
 data/
 output/
 .venv/
@@ -6,6 +6,7 @@ output/
 docs/
 research/
 scripts/
+deploy/
 *.pptx
 .git/
 evaluate.py
