@@ -371,3 +371,49 @@ subdomain via `associate-custom-domain` + CNAME validation records with Route53 
 external-DNS notes, subdomain left as a placeholder, cost honesty — ~$10–25/month
 running, ~$2–5 provisioned idle, **pause-service between demos is the right default**,
 teardown steps). `aws` CLI is NOT installed on this machine, so nothing was executed.
+
+## "Unmeasurable ≠ contradicted" round — avg_meas BREAKTHROUGH (2026-08-25)
+
+Provenance: a credible external result (~0.978→0.9898 on a thousands-plus public
+package, same data family as our medium set) attributing its biggest gain (+6.7pts) to
+forgiving pairs whose measurement FAILED (treat as UNKNOWN, not negative evidence),
+with average linkage and a CLAHE rescue view as supporting levers. Our port attempt,
+one mechanism at a time:
+
+**Experiment 1 (three-state clustering).** STEP 0 mechanism test, slice as specified
+(unknown = failed measurement [no homography in the guard pass] AND raw-luminance gap
+≥1.3): the slice is *less* pure than the measurable-sub-T population, not more —
+sample 1/8,722 true (0.011%) vs 79/9,119 (0.87%); spot 1/52,119 (0.002%) vs
+151/48,943 (0.31%). Failed measurement + gap <1.3: 0 true on both. The claimed
+profile ([1–2 strong links + rest unknown] for true orphans) also does not hold here:
+our true orphans carry median 8–9 strong (≥T) links + 62–156 mediocre ones. **Why the
+slice is impostor-pure in our stack: the histeq re-verify already converts the true
+"unmeasurable" links into measurable ones** — the external lever's value was already
+captured by histeq.
+
+**Experiment 2 (average linkage) — the rule, not the slice, is the active ingredient.**
+`scripts/exp_avglink.py`: plain average linkage (`avg_all`) merge-explodes
+(0.7536/0.7358, merges 6/12) — FAIL. Average-over-MEASURABLE (`avg_meas`: candidate
+joins iff mean norm_sqrt over links with a valid measurement ≥ T, ≥2 measurable links,
+failed measurements excluded from the mean; merge rule mirrors it): **PASSED the
+workshop gate** — no-fuse 0.8986/0.8653; full v3 stack + fuse **0.9275 sample
+(0 merges / 5 splits) / 0.8808 spot (2/21)** vs v3's 0.8696/0.8446. T_avg sits on a
+plateau (0.022–0.025 give identical full-stack results). Mechanism: orphans with 1–2
+very strong links + several weak-but-measurable ones now pass the mean test while the
+75%-fraction rule failed them; impostors stay out because their measurable AVERAGE is
+mediocre. Placement (ii) (post-fuse orphan pass) moot, not run.
+
+**Experiment 3 (CLAHE rescue view): NEGATIVE both sets.** Same band/histeq harness
+with CLAHE(2.0, 8×8) on the darker side instead of histogram matching: sample true
+links ≥T 22.7%→30.5% (histeq: 81.6%), AUC 0.810 (histeq 0.945); spot 23.3%→27.3%
+(histeq: 75.9%), AUC 0.779 (histeq 0.915). No workshop sweep per protocol — global
+tone alignment (histeq) dominates local contrast amplification (CLAHE), consistent
+with round-1 lever 2b.
+
+**Holdout confirmation (ONE run, pre-registered: avg_meas T_avg=0.025 + fuse
+T_fuse=0.022, guard metrics extended to ≥0.0075 to match workshop coverage):**
+**0.8957 → 0.9159 (316/345), merges 16→15, splits 20→14.** Same run's f0.75+fuse
+branch reproduced 0.8957 exactly (harness sanity). New best config (v4 candidate):
+gamma + norm_sqrt + histeq + cheirality guard + **avg_meas join rule** + fuse-rescue →
+**0.9275 sample / 0.8808 spot / 0.9159 holdout**. Holdout trajectory:
+0.7449 → 0.8145 → 0.8870 → 0.8957 → **0.9159**. Container rewiring (v5) not yet done.

@@ -73,7 +73,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--images", required=True)
     parser.add_argument("--manifest", required=True)
-    parser.add_argument("--lever", choices=("histeq", "relaxsift"), required=True)
+    parser.add_argument("--lever", choices=("histeq", "relaxsift", "clahe"), required=True)
     parser.add_argument("--band-lo", type=float, default=0.3, help="band lower edge, xT")
     parser.add_argument("--band-hi", type=float, default=1.2, help="band upper edge, xT")
     parser.add_argument("--min-gap", type=float, default=1.3, help="histeq: min luminance ratio")
@@ -112,7 +112,7 @@ def main():
             feats.append(detect(sift, img))
             if k % 200 == 0 or k == n:
                 print(f"  relaxed detect {k}/{n} ({time.time()-t0:.1f}s)", flush=True)
-    else:  # histeq: base features for the BRIGHTER side; darker side is per-pair
+    else:  # histeq / clahe: base features for the BRIGHTER side; darker side is per-pair
         sift = cv2.SIFT_create()
         t0 = time.time()
         feats = []
@@ -127,7 +127,7 @@ def main():
     else:
         work = [(i, j) for i, j in band
                 if max(lum[i], lum[j]) / max(min(lum[i], lum[j]), 1e-6) >= args.min_gap]
-        print(f"histeq: {len(work):,} of {len(band):,} band pairs have luminance gap >= {args.min_gap}")
+        print(f"{args.lever}: {len(work):,} of {len(band):,} band pairs have luminance gap >= {args.min_gap}")
 
     results = [None] * len(work)
 
@@ -143,13 +143,19 @@ def main():
                 out.append((k, inl / float(np.sqrt(ki * kj))))
             return out
     else:
+        def darker_view(img, ref):
+            if args.lever == "histeq":
+                return hist_match(img, ref)
+            # clahe rescue view: local contrast boost on the darker side
+            return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(img)
+
         def run_batch(batch):
             bf = cv2.BFMatcher(cv2.NORM_L2)
             s = cv2.SIFT_create()
             out = []
             for k, (i, j) in batch:
                 dark, bright = (i, j) if lum[i] <= lum[j] else (j, i)
-                adj = hist_match(images[dark], images[bright])
+                adj = darker_view(images[dark], images[bright])
                 pts_d, d_d = detect(s, adj)
                 pts_b, d_b = feats[bright]
                 inl = match_features(pts_d, d_d, pts_b, d_b, bf)
