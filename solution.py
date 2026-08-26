@@ -10,13 +10,16 @@ Algorithm (validated config, see grouper.py):
   equalization re-verify pass (borderline band 0.3-1.2 x 0.018 with raw
   luminance gap >= 1.3: histogram-match the darker image onto the brighter
   one's tonal distribution, re-detect, max-upgrade the pair score); then a
-  camera-translation guard (candidate edges re-matched + pose-decomposed,
-  cheirality ratio >= 0.5 -> edge blocked); verify-then-merge clustering
-  (candidate joins if it verifies, score >= T, against >= 75% of members,
-  T = 0.025); finally a fused-stack orphan rescue (MergeMertens composites
-  nominate, cheirality guard gates, T_fuse = 0.022).
+  camera-translation guard (pairs re-matched + pose-decomposed down to
+  0.3xT, cheirality ratio >= 0.5 -> edge blocked); then AVERAGE-OVER-
+  MEASURABLE clustering (candidate joins iff mean score over links with a
+  valid measurement >= T_avg = 0.025, >= 2 measurable links, failed
+  measurements excluded from the mean); finally a fused-stack orphan rescue
+  (MergeMertens composites nominate, cheirality guard gates,
+  T_fuse = 0.022).
 
-Local scores: 0.8696 sample-500 test sim / 0.8446 medium spot / 0.8957 holdout.
+Local scores: 0.9275 sample-500 test sim / 0.8808 medium spot / 0.9159
+holdout.
 
 Contract:
     Input:  /input/images/  — JPEG images from a single photoshoot (read-only)
@@ -40,9 +43,10 @@ INPUT_DIR = Path("/input/images")
 OUTPUT_DIR = Path("/output")
 SUPPORTED = {".jpg", ".jpeg", ".png"}
 
-# v3 config: 0.8696 sample / 0.8446 spot / 0.8957 holdout (validated)
+# v5 config: 0.9275 sample / 0.8808 spot / 0.9159 holdout (validated)
 CONFIG = dict(preprocess="gamma", normalize="norm_sqrt", reverify="histeq",
-              guard="cheirality", fuse_threshold=0.022, fraction=0.75, threshold=0.025)
+              guard="cheirality", fuse_threshold=0.022, policy="avg_meas",
+              threshold=0.025)
 
 
 def group_images(image_paths: list[str]) -> list[list[str]]:

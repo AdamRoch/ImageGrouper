@@ -97,12 +97,21 @@ def _run_job(job_id: str, paths: list[str]):
         matrix = grouper.reverify_histeq(matrix, paths, luminance, kps, descs, workers=workers)
 
         job["progress"] = "camera-motion guard (pose decomposition)"
-        ii, jj, _, cheir = grouper.compute_guard_metrics(
-            matrix, paths, images, luminance, kps, descs, CONFIG["threshold"], workers)
-        matrix = grouper.apply_cheirality_guard(matrix, ii, jj, cheir)
+        # avg_meas needs measurability down to 0.3xT; the same measurement
+        # drives edge blocking at >= threshold
+        min_score = 0.3 * CONFIG["threshold"] if CONFIG.get("policy") == "avg_meas" \
+            else CONFIG["threshold"]
+        ii, jj, blob, cheir = grouper.compute_guard_metrics(
+            matrix, paths, images, luminance, kps, descs, min_score, workers)
+        matrix = grouper.apply_cheirality_guard(matrix, ii, jj, cheir,
+                                                block_floor=CONFIG["threshold"])
+        valid = grouper.guard_valid_matrix(len(paths), ii, jj, blob) \
+            if CONFIG.get("policy") == "avg_meas" else None
 
         job["progress"] = "clustering"
-        clusters = grouper.cluster_verify_all(matrix, CONFIG["threshold"], CONFIG["fraction"])
+        clusters = grouper.cluster_with_policy(matrix, CONFIG.get("policy", "verify_all"),
+                                               CONFIG["threshold"],
+                                               CONFIG.get("fraction", 1.0), valid)
 
         job["progress"] = "fused-stack orphan rescue"
         clusters = grouper.fuse_rescue(matrix, clusters, images, luminance, kps, descs,

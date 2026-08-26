@@ -390,13 +390,20 @@ def compute_guard_metrics(matrix: np.ndarray, image_paths: list[str], images, lu
 
 
 def apply_cheirality_guard(matrix: np.ndarray, ii, jj, cheir,
-                           cut: float = CHEIRALITY_CUT) -> np.ndarray:
-    """Zero candidate edges whose cheirality ratio >= cut (camera moved)."""
+                           cut: float = CHEIRALITY_CUT,
+                           block_floor: float | None = None) -> np.ndarray:
+    """
+    Zero candidate edges whose cheirality ratio >= cut (camera moved).
+    Only edges scoring >= block_floor are zeroed (default: block everything
+    measured). v3 used block_floor = clustering threshold.
+    """
     guarded = matrix.copy()
     ok = ~np.isnan(cheir)
+    if block_floor is not None:
+        ok &= matrix[ii, jj] >= block_floor
+    n_blocked = int((ok & (cheir >= cut)).sum())
     for k in np.flatnonzero(ok & (cheir >= cut)):
         guarded[ii[k], jj[k]] = guarded[jj[k], ii[k]] = 0.0
-    n_blocked = int((ok & (cheir >= cut)).sum())
     print(f"  guard: blocked {n_blocked:,} candidate edges (cheirality >= {cut:g})", flush=True)
     return guarded
 
@@ -624,6 +631,67 @@ def cluster_verify_all(matrix: np.ndarray, threshold: float, fraction: float = 1
     assigned = set(membership)
     result.extend([[i] for i in range(n) if i not in assigned])
     return result
+
+
+def cluster_avg_meas(matrix: np.ndarray, threshold: float, valid: np.ndarray,
+                     min_measurable: int = 2) -> list[list[int]]:
+    """
+    Average-over-measurable join rule (v5; from scripts/exp_avglink.py,
+    semantics line-for-line). A candidate joins a group iff the mean score
+    over its MEASURABLE links to members is >= threshold, requiring at least
+    `min_measurable` measurable links. `valid` marks measurability: 1.0 where
+    the pair produced a valid measurement (homography in the guard pass),
+    NaN where the measurement failed (forgiven — excluded from the mean) or
+    was never attempted. Guard-blocked (contradicted) links are measurable
+    and carry score 0 in the guarded matrix — a veto via the mean. The merge
+    rule mirrors the join rule. Unassigned images become singletons.
+
+    Validated (v3 stack + fuse): 0.9275 sample / 0.8808 spot / 0.9159 holdout.
+    """
+
+    def verifies(idx, members):
+        scores = matrix[idx, members]
+        ok = ~np.isnan(valid[idx, members])
+        return ok.sum() >= min_measurable and scores[ok].mean() >= threshold
+
+    n = matrix.shape[0]
+    groups: list[list[int] | None] = []
+    membership: dict[int, int] = {}
+
+    for _, i, j in candidate_edges(matrix, threshold):
+        gi, gj = membership.get(i), membership.get(j)
+        if gi is None and gj is None:
+            membership[i] = membership[j] = len(groups)
+            groups.append([i, j])
+        elif gi is None:
+            if verifies(i, groups[gj]):
+                groups[gj].append(i)
+                membership[i] = gj
+        elif gj is None:
+            if verifies(j, groups[gi]):
+                groups[gi].append(j)
+                membership[j] = gi
+        elif gi != gj:
+            if all(verifies(a, groups[gj]) for a in groups[gi]):
+                groups[gi].extend(groups[gj])
+                for m in groups[gj]:
+                    membership[m] = gi
+                groups[gj] = None
+
+    result = [g for g in groups if g]
+    assigned = set(membership)
+    result.extend([[i] for i in range(n) if i not in assigned])
+    return result
+
+
+def guard_valid_matrix(n: int, ii, jj, blob) -> np.ndarray:
+    """Measurability matrix for avg_meas: 1.0 where the guard pass produced a
+    valid measurement (homography succeeded), NaN elsewhere."""
+    valid = np.full((n, n), np.nan, dtype=np.float32)
+    ok = ~np.isnan(blob)
+    valid[ii[ok], jj[ok]] = 1.0
+    valid[jj[ok], ii[ok]] = 1.0
+    return valid
 
 
 def cluster_verify_rescue(matrix: np.ndarray, threshold: float, luminance,
@@ -890,6 +958,18 @@ def normalize_score_matrix(matrix: np.ndarray, kps, mode: str) -> np.ndarray:
     return out
 
 
+def cluster_with_policy(matrix: np.ndarray, policy: str, threshold: float,
+                        fraction: float, valid: np.ndarray | None = None) -> list[list[int]]:
+    """Shared clustering dispatch (used by group_images and server.py)."""
+    if policy == "verify_all":
+        return cluster_verify_all(matrix, threshold, fraction)
+    if policy == "avg_meas":
+        if valid is None:
+            raise ValueError("avg_meas requires guard measurability (valid matrix)")
+        return cluster_avg_meas(matrix, threshold, valid)
+    return POLICIES[policy](matrix, threshold)
+
+
 def group_images(image_paths: list[str], threshold: float = DEFAULT_THRESHOLD,
                  ratio: float = RATIO_TEST, policy: str = "verify_all",
                  preprocess: str = "none", normalize: str | None = None,
@@ -899,9 +979,10 @@ def group_images(image_paths: list[str], threshold: float = DEFAULT_THRESHOLD,
     """
     Group images by camera angle. Returns groups of basenames.
 
-    Defaults reproduce the raw baseline. The validated v3 submission config:
+    Defaults reproduce the raw baseline. The validated v5 submission config:
     preprocess="gamma", normalize="norm_sqrt", reverify="histeq",
-    guard="cheirality", fuse_threshold=0.022, fraction=0.75, threshold=0.025.
+    guard="cheirality", fuse_threshold=0.022, policy="avg_meas",
+    threshold=0.025.
     """
     paths = [str(p) for p in image_paths]
     names, kps, descs = extract_features(paths, preprocess=preprocess)
@@ -917,21 +998,25 @@ def group_images(image_paths: list[str], threshold: float = DEFAULT_THRESHOLD,
         if reverify != "histeq":
             raise ValueError(f"unknown reverify mode {reverify!r}")
         matrix = reverify_histeq(matrix, paths, luminance, kps, descs, workers=workers)
-    if guard is not None or fuse_threshold is not None:
+
+    valid = None
+    if guard is not None or fuse_threshold is not None or policy == "avg_meas":
         t0 = time.time()
         images = [load_gray(p, preprocess=preprocess) for p in paths]
         print(f"  stages: loaded {len(paths)} {preprocess} images ({time.time() - t0:.1f}s)",
               flush=True)
+        # avg_meas needs measurability down to 0.3xT (workshop coverage);
+        # the same measurement drives edge blocking at >= threshold.
+        min_score = 0.3 * threshold if policy == "avg_meas" else threshold
+        ii, jj, blob, cheir = compute_guard_metrics(matrix, paths, images, luminance,
+                                                    kps, descs, min_score, workers)
+        if policy == "avg_meas":
+            valid = guard_valid_matrix(len(paths), ii, jj, blob)
     if guard is not None:
         if guard != "cheirality":
             raise ValueError(f"unknown guard mode {guard!r}")
-        ii, jj, _, cheir = compute_guard_metrics(matrix, paths, images, luminance,
-                                                 kps, descs, threshold, workers)
-        matrix = apply_cheirality_guard(matrix, ii, jj, cheir)
-    if policy == "verify_all":
-        clusters = cluster_verify_all(matrix, threshold, fraction)
-    else:
-        clusters = POLICIES[policy](matrix, threshold)
+        matrix = apply_cheirality_guard(matrix, ii, jj, cheir, block_floor=threshold)
+    clusters = cluster_with_policy(matrix, policy, threshold, fraction, valid)
     if fuse_threshold is not None:
         clusters = fuse_rescue(matrix, clusters, images, luminance, kps, descs,
                                fuse_threshold, workers)

@@ -417,3 +417,32 @@ branch reproduced 0.8957 exactly (harness sanity). New best config (v4 candidate
 gamma + norm_sqrt + histeq + cheirality guard + **avg_meas join rule** + fuse-rescue →
 **0.9275 sample / 0.8808 spot / 0.9159 holdout**. Holdout trajectory:
 0.7449 → 0.8145 → 0.8870 → 0.8957 → **0.9159**. Container rewiring (v5) not yet done.
+
+## v5 container wiring (2026-08-26)
+
+avg_meas promoted from `scripts/exp_avglink.py` into `grouper.py` as a first-class
+policy: `cluster_avg_meas` (mean norm_sqrt over MEASURABLE links ≥ T_avg, ≥2
+measurable links, failed measurements excluded from the mean, merge rule mirrors join
+rule; guard-blocked edges carry score 0 in the guarded matrix — veto via the mean),
+plus `guard_valid_matrix` (measurability from guard metrics) and
+`cluster_with_policy` (shared dispatch for `group_images` and `server.py`).
+`group_images(policy="avg_meas")` automatically extends the guard measurement floor
+to 0.3×T (workshop coverage: measurability is defined by the guard pass).
+`solution.py` CONFIG → v5 (guard on, fuse on, policy="avg_meas", T=0.025,
+T_fuse=0.022); `server.py` dispatches clustering via `cluster_with_policy` — demo
+inherits v5 unchanged otherwise.
+
+Parity check from caches: ported policy reproduces the workshop no-fuse run
+group-for-group (78/78). Local rehearsal of the exact container code path on
+`data/sample500/test_sim`: **0.9275 (64/69, 0 merges), 76/76 groups identical** to the
+workshop fuse artifact. Emulated Docker VM run (`output/docker_rehearsal_v5/`):
+**0.9275 (64/69, 0 merges), 76/76 groups identical** — zero drift again.
+
+Runtime deltas vs v3: the avg_meas measurability requirement extends the guard pass
+from ~4k to ~22.4k pairs on the sample (0.3×T floor) — emulated total 50.7 min vs
+v3's 36.9 min (+37%; guard 1,118s vs 213s). Native cpu-xlarge estimate: ~450–550
+images per 45-min run (was ~500–650) — shortlist pre-filter threshold lowers again.
+
+Docker: `adamm13/autohdr-solution:v5` built (`--platform linux/amd64`), pushed,
+verified public two ways (manifest inspect + Hub API); v1–v4 intact. Server smoke test
+on the v5 config passed (8-image job: two brackets + 2 singletons, correct groups).
